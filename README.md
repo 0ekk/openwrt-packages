@@ -20,6 +20,11 @@ apk update
 apk add luci-app-fullcone
 ```
 
+Upgrade: `apk update && apk upgrade` (everything), or only these packages with
+`apk add -u luci-app-fullcone fullcone iptables-mod-fullconenat kmod-ipt-fullconenat`, which
+also upgrades their dependencies (e.g. `luci-base`); add `--simulate` first. Packages that were
+installed from files stay pinned to that file until `apk add <name>` re-adds them by name.
+
 Compare the downloaded key with [keys/openwrt-packages.pem](keys/openwrt-packages.pem) in this
 repository. After a firmware upgrade, point the feed line at the new release.
 

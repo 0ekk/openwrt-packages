@@ -2,9 +2,12 @@ name: feed
 
 # Builds package/ for every sdk/*.env, signs one apk index per release/target and publishes
 # them with the public key on GitHub Pages: <pages>/<release>/<target>/packages.adb.
+# Only package inputs trigger a build: a rebuild would republish the same versions with new
+# hashes. After editing this workflow, start it by hand (workflow_dispatch).
 on:
   push:
     branches: [main]
+    paths: [package/**, sdk/**, build.sh, keys/**]
   workflow_dispatch:
 
 permissions:
