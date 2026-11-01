@@ -40,17 +40,23 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y gawk gettext libncurses-dev rsync unzip zstd file
       - run: ./build.sh "$SDK_ENV"
       # The key only exists after the SDK build (third-party code) has finished.
+      # index.json (unsigned package list, as the SDK makes it) is what owut/attended sysupgrade read.
       - name: Sign index
         env:
           APK_SIGN_KEY: ${{ secrets.APK_SIGN_KEY }}
         run: |
           . "./$SDK_ENV"
-          apk=$PWD/.build/$SDK/staging_dir/host/bin/apk
+          sdk=$PWD/.build/$SDK
+          apk=$sdk/staging_dir/host/bin/apk
           key=$RUNNER_TEMP/sign.pem
           (umask 077 && printf '%s\n' "$APK_SIGN_KEY" > "$key")
           (cd out && "$apk" mkndx --allow-untrusted --sign "$key" --output packages.adb ./*.apk)
           rm -f "$key"
           "$apk" --keys-dir "$PWD/keys" verify out/packages.adb
+          arch=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\(.*\)"/\1/p' "$sdk/.config")
+          "$apk" adbdump --format json out/packages.adb |
+            "$sdk/scripts/make-index-json.py" -f apk -a "$arch" - > out/index.json
+          jq -e '.packages | length > 0' out/index.json
           mkdir -p "site/$REL/$TARGET"
           mv out/* "site/$REL/$TARGET/"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -11,7 +11,6 @@ ENV=${1:-$(ls "$TOP"/sdk/*.env | sort -V | tail -n 1)}
 MIRROR=${MIRROR:-https://downloads.openwrt.org}
 B=$TOP/.build
 S=$B/$SDK
-BASE=$B/dl/openwrt-$BASE_REV
 mkdir -p "$B/dl"
 
 if [ ! -d "$S" ]; then
@@ -26,6 +25,9 @@ magic=${KERNEL_PIN#*~}
 magic=${magic%-r*}
 grep -q "$magic" "$S/include/kernel.mk" || { echo "SDK kernel does not match $KERNEL_PIN" >&2; exit 1; }
 
+# The base feed (build dependencies such as iptables) at the commit the SDK was released with.
+BASE_REV=$(sed -n 's/^src-git .* base .*\^//p' "$S/feeds.conf.default")
+BASE=$B/dl/openwrt-${BASE_REV:?no base feed commit in feeds.conf.default}
 [ -d "$BASE" ] || curl -fL --retry 3 "https://codeload.github.com/openwrt/openwrt/tar.gz/$BASE_REV" | tar -xz -C "$B/dl"
 
 cd "$S"

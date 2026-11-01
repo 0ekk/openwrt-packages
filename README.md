@@ -7,8 +7,8 @@ Actions and published on GitHub Pages: `https://0ekk.github.io/openwrt-packages/
 |---|---|
 | `luci-app-fullcone`, `fullcone`, `kmod-ipt-fullconenat`, `iptables-mod-fullconenat` | IPv4 UDP full cone NAT (NAT1) for firewall4: [docs/fullcone.md](docs/fullcone.md) |
 
-Builds exist for each file in [sdk/](sdk/) (now: 25.12.5 x86/64). Kernel modules only install on
-the exact kernel of that release.
+Builds exist for each file in [sdk/](sdk/) (now: 25.12.5 and 25.12.6, x86/64). Kernel modules
+only install on the exact kernel of that release.
 
 ## Use the feed on a router
 
@@ -38,9 +38,10 @@ repository. After a firmware upgrade, point the feed line at the new release.
 
 ## Add a release or target
 
-Copy an `sdk/*.env` file and fill in the new SDK name, its sha256 (release `sha256sums`), the base
-feed commit (SDK `feeds.conf.default`) and the kernel pin (`kernel=` line in `/etc/apk/world` on a
-router running that release). Keep the old file until no router uses it.
+`sdk/new.sh <release> <target>` (e.g. `sdk/new.sh 25.12.6 x86/64`) writes
+`sdk/<release>-<target>.env` from the release's download directory: SDK name and sha256 from
+`sha256sums`, kernel pin from the `kmods/` directory name. Commit it and push. Keep the old file
+until no router uses it.
 
 ## Build and test locally
 
