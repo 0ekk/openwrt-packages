@@ -1,0 +1,11 @@
+config fullcone 'main'
+	option enabled '0'
+	# Empty: derived from network.lan / network.wan
+	option lan_subnet ''
+	option wan_device ''
+	# Inbound UDP ports kept for VPN / remote-access services on the router itself
+	list exclude_port '41641'
+	list exclude_port '51820'
+	list exclude_port '9993'
+	list exclude_port '32448'
+	list exclude_port '21116'

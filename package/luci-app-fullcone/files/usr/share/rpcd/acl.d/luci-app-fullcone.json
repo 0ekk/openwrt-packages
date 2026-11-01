@@ -1,0 +1,14 @@
+{
+	"luci-app-fullcone": {
+		"description": "Grant access to full cone NAT settings",
+		"read": {
+			"file": {
+				"/usr/share/fullcone/fullcone.sh status": [ "exec" ]
+			},
+			"uci": [ "fullcone" ]
+		},
+		"write": {
+			"uci": [ "fullcone" ]
+		}
+	}
+}

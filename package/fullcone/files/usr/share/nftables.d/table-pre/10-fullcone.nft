@@ -1,0 +1,9 @@
+# Filled by /usr/share/fullcone/fullcone.sh only after the FULLCONENAT rules are in place.
+set fullcone_lan {
+	type ipv4_addr
+	flags interval
+}
+
+set fullcone_wan {
+	type ifname
+}

@@ -1,0 +1,10 @@
+#!/bin/sh
+uci -q get firewall.fullcone >/dev/null && exit 0
+uci batch <<-EOT
+	set firewall.fullcone=include
+	set firewall.fullcone.type=script
+	set firewall.fullcone.path=/usr/share/fullcone/fullcone.sh
+	set firewall.fullcone.fw4_compatible=1
+	commit firewall
+EOT
+exit 0

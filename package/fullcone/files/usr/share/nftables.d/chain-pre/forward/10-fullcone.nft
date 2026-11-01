@@ -1,0 +1,1 @@
+meta l4proto udp iifname @fullcone_wan ip daddr @fullcone_lan ct status dnat accept comment "fullcone: inbound UDP mapped by xt_FULLCONENAT"

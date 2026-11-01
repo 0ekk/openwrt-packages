@@ -1,0 +1,1 @@
+meta l4proto udp oifname @fullcone_wan ip saddr @fullcone_lan return comment "fullcone: UDP is NATed by xt_FULLCONENAT"

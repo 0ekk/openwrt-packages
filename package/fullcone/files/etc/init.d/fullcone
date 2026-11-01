@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+# No process: the firewall include does the work; this only turns config changes into a firewall reload.
+
+START=99
+USE_PROCD=1
+
+start_service() {
+	return 0
+}
+
+reload_service() {
+	/etc/init.d/firewall reload
+}
+
+service_triggers() {
+	procd_add_reload_trigger fullcone
+}

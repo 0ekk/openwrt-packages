@@ -1,0 +1,27 @@
+On kernels >= 5.15 without the CONFIG_NF_CONNTRACK_CHAIN_EVENTS hack, each netns
+has a single conntrack event callback slot, owned by ctnetlink (nlbwmon, conntrack -E).
+Never take it: if this module registered first, a later ctnetlink load would WARN and
+overwrite it, and our unregister on the next rule flush would clear ctnetlink's
+callback. Mappings are then reclaimed lazily by check_mapping(); say so once instead
+of warning on every rule reload.
+
+--- a/xt_FULLCONENAT.c
++++ b/xt_FULLCONENAT.c
+@@ -1266,15 +1266,14 @@
+ #endif
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0) && !defined(CONFIG_NF_CONNTRACK_CHAIN_EVENTS)
+-    if (!READ_ONCE(par->net->ct.nf_conntrack_event_cb)) {
+-      nf_conntrack_register_notifier(par->net, &ct_event_notifier);
++    if (0) {
+ #else
+     if (nf_conntrack_register_notifier(par->net, &ct_event_notifier) == 0) {
+ #endif
+       ct_event_notifier_registered = 1;
+       pr_debug("xt_FULLCONENAT: fullconenat_tg_check(): ct_event_notifier registered\n");
+     } else {
+-      printk("xt_FULLCONENAT: warning: failed to register a conntrack notifier. Disable active GC for mappings.\n");
++      pr_info_once("xt_FULLCONENAT: conntrack event notifier not used, mappings are reclaimed lazily\n");
+     }
+ 
+   }
