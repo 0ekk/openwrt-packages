@@ -1,0 +1,81 @@
+name: feed
+
+# Builds package/ for every sdk/*.env, signs one apk index per release/target and publishes
+# them with the public key on GitHub Pages: <pages>/<release>/<target>/packages.adb.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  sdks:
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.ls.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: ls
+        run: echo "list=$(ls sdk/*.env | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: sdks
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        env: ${{ fromJSON(needs.sdks.outputs.list) }}
+    env:
+      SDK_ENV: ${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update && sudo apt-get install -y gawk gettext libncurses-dev rsync unzip zstd file
+      - run: ./build.sh "$SDK_ENV"
+      # The key only exists after the SDK build (third-party code) has finished.
+      - name: Sign index
+        env:
+          APK_SIGN_KEY: ${{ secrets.APK_SIGN_KEY }}
+        run: |
+          . "./$SDK_ENV"
+          apk=$PWD/.build/$SDK/staging_dir/host/bin/apk
+          key=$RUNNER_TEMP/sign.pem
+          (umask 077 && printf '%s\n' "$APK_SIGN_KEY" > "$key")
+          (cd out && "$apk" mkndx --allow-untrusted --sign "$key" --output packages.adb ./*.apk)
+          rm -f "$key"
+          "$apk" --keys-dir "$PWD/keys" verify out/packages.adb
+          mkdir -p "site/$REL/$TARGET"
+          mv out/* "site/$REL/$TARGET/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: feed-${{ strategy.job-index }}
+          path: site
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: feed-*
+          path: site
+          merge-multiple: true
+      - run: cp -r keys site/
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

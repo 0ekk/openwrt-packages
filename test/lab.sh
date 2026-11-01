@@ -2,7 +2,8 @@
 # QEMU lab: the official OpenWrt image behind a PPPoE "ISP" with an RFC 5780 STUN server.
 # No bridges (host br_netfilter/forward rules stay out of the way): the VM's LAN tap is
 # moved into netns fcl-lan as the LAN client, its WAN tap into netns fcl-wan as the ISP.
-# Usage (root): test/lab.sh up | check | down. Needs qemu-system-x86_64, pppoe-server, python3.
+# Usage (root): test/lab.sh up | check | down. `check` installs out/*.apk and sources every
+# test/<package>/check.sh. MIRROR changes the download host. Needs qemu-system-x86_64, pppoe-server.
 set -eu
 
 REL=25.12.5
@@ -12,7 +13,7 @@ TOP=$(cd "$(dirname "$0")/.." && pwd)
 D=$TOP/.build/lab
 SSH="ssh -T -i $D/key -p 2222 -o BatchMode=yes -o ControlMaster=no -o ControlPath=none
 	-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1"
-NAT="ip netns exec fcl-lan python3 -I $TOP/check_nat.py 203.0.113.1:3478"
+MIRROR=${MIRROR:-https://downloads.openwrt.org}
 
 vm() {
 	$SSH "$@"
@@ -20,7 +21,7 @@ vm() {
 
 up() {
 	mkdir -p "$D"
-	[ -f "$D/$IMG" ] || curl -fL -o "$D/$IMG" "https://mirrors.ustc.edu.cn/openwrt/releases/$REL/targets/x86/64/$IMG"
+	[ -f "$D/$IMG" ] || curl -fL -o "$D/$IMG" "$MIRROR/releases/$REL/targets/x86/64/$IMG"
 	echo "$IMG_SHA256  $D/$IMG" | sha256sum -c -
 	gunzip -c "$D/$IMG" > "$D/openwrt.img" 2>/dev/null || true
 	[ -f "$D/key" ] || ssh-keygen -q -t ed25519 -N '' -C fullcone-lab -f "$D/key"
@@ -29,7 +30,7 @@ up() {
 	mount -o loop,offset=$(($(partx -g -o START -n 2 "$D/openwrt.img") * 512)) "$D/openwrt.img" "$D/mnt"
 	install -D -m 600 "$D/key.pub" "$D/mnt/etc/dropbear/authorized_keys"
 	# mgmt (QEMU user net) keeps the default route for apk; the lab "internet" is routed via pppoe-wan.
-	cat > "$D/mnt/etc/uci-defaults/99-lab" <<-'EOF'
+	cat > "$D/mnt/etc/uci-defaults/99-lab" <<-EOF
 	uci batch <<EOT
 	set network.mgmt=interface
 	set network.mgmt.proto=dhcp
@@ -44,7 +45,7 @@ up() {
 	set network.@route[-1].target=203.0.113.0/24
 	commit
 	EOT
-	sed -i 's#https://downloads.openwrt.org#https://mirrors.ustc.edu.cn/openwrt#' /etc/apk/repositories.d/distfeeds.list
+	sed -i 's#https://downloads.openwrt.org#$MIRROR#' /etc/apk/repositories.d/distfeeds.list
 	exit 0
 	EOF
 	umount "$D/mnt"
@@ -98,31 +99,12 @@ fail() {
 }
 
 check() {
-	(cd "$TOP/out" && tar -cf - ./*.apk) | vm 'rm -rf /tmp/fullcone && mkdir /tmp/fullcone && tar -xf - -C /tmp/fullcone &&
-		apk add --allow-untrusted /tmp/fullcone/*.apk >/dev/null'
-	vm 'uci set fullcone.main.enabled=0 && uci commit fullcone && /etc/init.d/firewall reload 2>/dev/null; dmesg -c >/dev/null'
-
-	! $NAT >/dev/null || fail "disabled but already full cone"
-	ok "disabled: not full cone"
-
-	vm 'FULLCONE_FORCE=1 /usr/share/fullcone/fullcone.sh'
-	vm '/usr/share/fullcone/fullcone.sh status' | grep -q '"mode":"fullcone"' || fail "forced: mode is not fullcone"
-	$NAT >/dev/null || fail "forced: not full cone"
-	ok "forced: full cone"
-
-	vm 'uci set fullcone.main.enabled=1 && uci commit fullcone && reload_config && sleep 3 && /etc/init.d/firewall reload 2>/dev/null'
-	$NAT >/dev/null || fail "enabled + firewall reload: not full cone"
-	vm 'conntrack -L -p udp 2>/dev/null' | grep -q 'src=203.0.113.2 .*\[UNREPLIED\] src=192.168.1.100' ||
-		fail "no inbound DNAT entry from the STUN alternate address"
-	ok "enabled: full cone across firewall reload, inbound DNAT seen"
-
-	vm 'dmesg' | grep -q -E 'WARNING|BUG|Oops' && fail "kernel warning in dmesg"
-	ok "dmesg clean"
-
-	vm 'uci set fullcone.main.enabled=0 && uci commit fullcone && reload_config && sleep 3'
-	vm 'grep -q "^xt_FULLCONENAT " /proc/modules' && fail "disabled: module still loaded"
-	! $NAT >/dev/null || fail "disabled again: still full cone"
-	ok "disabled again: module unloaded, stock masquerade"
+	(cd "$TOP/out" && tar -cf - ./*.apk) | vm 'rm -rf /tmp/pkgs && mkdir /tmp/pkgs && tar -xf - -C /tmp/pkgs &&
+		apk add --allow-untrusted /tmp/pkgs/*.apk >/dev/null'
+	for t in "$TOP"/test/*/check.sh; do
+		echo "== ${t#"$TOP"/}"
+		. "$t"
+	done
 }
 
 down() {

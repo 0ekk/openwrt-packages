@@ -1,62 +1,53 @@
-# openwrt-fullcone
+# openwrt-packages
 
-IPv4 UDP full cone NAT (NAT1) for a stock OpenWrt 25.12.5 x86/64 router with firewall4, without
-reflashing: `xt_FULLCONENAT` built with the official SDK, a firewall4 include, and a LuCI page
-(Network → Full Cone NAT). TCP keeps the normal masquerade. Design notes:
-[docs/plan/2026-10-26-fullcone.md](docs/plan/2026-10-26-fullcone.md).
+A small apk feed for stock OpenWrt (25.12 and later), built with the official SDK on GitHub
+Actions and published on GitHub Pages: `https://0ekk.github.io/openwrt-packages/`.
 
-## Build
+| Packages | What |
+|---|---|
+| `luci-app-fullcone`, `fullcone`, `kmod-ipt-fullconenat`, `iptables-mod-fullconenat` | IPv4 UDP full cone NAT (NAT1) for firewall4: [docs/fullcone.md](docs/fullcone.md) |
+
+Builds exist for each file in [sdk/](sdk/) (now: 25.12.5 x86/64). Kernel modules only install on
+the exact kernel of that release.
+
+## Use the feed on a router
 
 ```sh
-./build.sh            # downloads + verifies the SDK, checks the router's kernel pin, writes out/*.apk
+wget -O /etc/apk/keys/openwrt-packages.pem https://0ekk.github.io/openwrt-packages/keys/openwrt-packages.pem
+echo /etc/apk/keys/openwrt-packages.pem >> /etc/sysupgrade.conf
+echo https://0ekk.github.io/openwrt-packages/25.12.5/x86/64/packages.adb >> /etc/apk/repositories.d/customfeeds.list
+apk update
+apk add luci-app-fullcone
 ```
 
-`ROUTER=root@host` changes the router (default: OpenWrt's `root@192.168.1.1`, also for `install.sh`); `KERNEL_PIN=...` skips the SSH lookup.
+Compare the downloaded key with [keys/openwrt-packages.pem](keys/openwrt-packages.pem) in this
+repository. After a firmware upgrade, point the feed line at the new release.
 
-## Test in QEMU first
+## Add a package
+
+1. Put an OpenWrt package directory in `package/<name>/`. `package/` is built as a feed, so
+   dependencies from the OpenWrt base feed are pulled in automatically.
+2. Optional QEMU test: `test/<name>/check.sh`, sourced by `test/lab.sh check`.
+3. Bump `PKG_RELEASE` (or the version) on every change, otherwise `apk upgrade` ignores it.
+4. Push to `main`: the `feed` workflow builds, signs and publishes.
+
+## Add a release or target
+
+Copy an `sdk/*.env` file and fill in the new SDK name, its sha256 (release `sha256sums`), the base
+feed commit (SDK `feeds.conf.default`) and the kernel pin (`kernel=` line in `/etc/apk/world` on a
+router running that release). Keep the old file until no router uses it.
+
+## Build and test locally
 
 ```sh
-test/lab.sh up        # official image + PPPoE ISP + RFC 5780 STUN server, all in netns (root, KVM)
-test/lab.sh check     # installs out/*.apk, asserts disabled/forced/enabled/reload/disable behavior
+./build.sh [sdk/<release>-<target>.env]   # out/*.apk; MIRROR=https://<mirror>/openwrt to change the host
+test/lab.sh up && test/lab.sh check       # root + KVM; needs qemu-system-x86_64 and pppoe-server
 test/lab.sh down
+ROUTER=root@<router> ./install.sh         # install out/*.apk without the feed
 ```
 
-Needs `qemu-system-x86_64` (Arch: `qemu-base`) and `pppoe-server` (`rp-pppoe`).
+## Signing
 
-## Install
-
-Take a VM snapshot first. Then:
-
-```sh
-./install.sh          # apk add --simulate, then apk add --allow-untrusted; ships disabled
-```
-
-Try it until the next firewall reload or reboot:
-
-```sh
-ssh root@<router> 'FULLCONE_FORCE=1 /usr/share/fullcone/fullcone.sh; /usr/share/fullcone/fullcone.sh status'
-python3 check_nat.py  # from a LAN host; expects "RESULT: Full Cone (NAT1)"
-```
-
-Keep it on: tick Enable in LuCI, or `uci set fullcone.main.enabled=1; uci commit fullcone; reload_config`.
-
-## TCP NAT1 for chosen LAN endpoints
-
-The package does UDP only. For TCP NAT1 on a LAN `ip:port`, add a stock port forward in LuCI
-(Network → Firewall → Port Forwards): protocol TCP, source zone wan, external port `P`,
-destination zone lan, internal IP `ip`, internal port empty (reuses `P`). Masquerade keeps the
-source port, so the CGNAT mapping of `P` reaches the LAN host. Skip ports used by Docker or
-`exclude_port`. Details: the TCP section of the design notes.
-
-## Uninstall
-
-```sh
-apk del luci-app-fullcone fullcone iptables-mod-fullconenat kmod-ipt-fullconenat
-```
-
-## Limits
-
-- After a firmware upgrade the kmod no longer matches the kernel: rebuild with the new SDK.
-  Remove the packages before an attended sysupgrade.
-- UDP sent through a proxy TUN does not get full cone.
-- Mappings are reclaimed lazily; disabling unloads the module and frees them.
+The workflow signs `packages.adb` with the `APK_SIGN_KEY` secret (EC P-256 private key, PEM);
+the public half is `keys/openwrt-packages.pem`. To rotate: make a new pair, replace the secret
+and `keys/`, and install the new public key on every router. Design notes: [docs/plan/](docs/plan/).
