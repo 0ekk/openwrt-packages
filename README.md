@@ -26,7 +26,8 @@ also upgrades their dependencies (e.g. `luci-base`); add `--simulate` first. Pac
 installed from files stay pinned to that file until `apk add <name>` re-adds them by name.
 
 Compare the downloaded key with [keys/openwrt-packages.pem](keys/openwrt-packages.pem) in this
-repository. After a firmware upgrade, point the feed line at the new release.
+repository. Firmware upgrades (attended sysupgrade cannot include feed packages):
+[docs/firmware-upgrade.md](docs/firmware-upgrade.md).
 
 ## Add a package
 

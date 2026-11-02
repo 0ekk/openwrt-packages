@@ -24,6 +24,8 @@ up() {
 	[ -f "$D/$IMG" ] || curl -fL -o "$D/$IMG" "$MIRROR/releases/$REL/targets/x86/64/$IMG"
 	echo "$IMG_SHA256  $D/$IMG" | sha256sum -c -
 	gunzip -c "$D/$IMG" > "$D/openwrt.img" 2>/dev/null || true
+	# Free space after the partitions, as on a real disk (lets upgrade rehearsals grow the root).
+	truncate -s 2G "$D/openwrt.img"
 	[ -f "$D/key" ] || ssh-keygen -q -t ed25519 -N '' -C fullcone-lab -f "$D/key"
 
 	mkdir -p "$D/mnt"
