@@ -7,7 +7,7 @@ name: feed
 on:
   push:
     branches: [main]
-    paths: [package/**, sdk/**, build.sh, keys/**]
+    paths: [package/**, sdk/**, build.sh, prebuilt.list, keys/**]
   workflow_dispatch:
 
 permissions:

@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build every package in package/ with the official OpenWrt SDK described by an sdk/*.env file.
+# Build every package in package/ with the official OpenWrt SDK described by an sdk/*.env file
+# and add the upstream release files listed in prebuilt.list.
 # Usage: ./build.sh [sdk/<release>-<target>.env]   (default: the newest file in sdk/)
 # Output: out/*.apk. MIRROR changes the download host (e.g. https://mirrors.ustc.edu.cn/openwrt).
 # Verbose build: V=s ./build.sh
@@ -54,6 +55,12 @@ mkdir "$TOP/out"
 for p in $PKGS; do
 	find bin -name "$p-[0-9]*.apk" -exec cp {} "$TOP/out/" \;
 	ls "$TOP/out/$p-"[0-9]*.apk >/dev/null 2>&1 || { echo "no apk built for $p" >&2; exit 1; }
+done
+sed '/^#/d;/^$/d' "$TOP/prebuilt.list" | while read -r sum url; do
+	f=$B/dl/${url##*/}
+	[ -f "$f" ] || curl -fL --retry 3 -o "$f" "$url"
+	echo "$sum  $f" | sha256sum -c -
+	cp "$f" "$TOP/out/"
 done
 for k in "$TOP"/out/kmod-*.apk; do
 	[ -e "$k" ] || continue

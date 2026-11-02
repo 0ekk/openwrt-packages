@@ -24,12 +24,16 @@ up() {
 	[ -f "$D/$IMG" ] || curl -fL -o "$D/$IMG" "$MIRROR/releases/$REL/targets/x86/64/$IMG"
 	echo "$IMG_SHA256  $D/$IMG" | sha256sum -c -
 	gunzip -c "$D/$IMG" > "$D/openwrt.img" 2>/dev/null || true
-	# Free space after the partitions, as on a real disk (lets upgrade rehearsals grow the root).
+	# The root fills a 2 GB disk: the image's ~100 MB root is too small for packages such as
+	# luci-app-openclash. A sysupgrade still writes the small partition table back.
 	truncate -s 2G "$D/openwrt.img"
+	echo ', +' | sfdisk -q -N 2 "$D/openwrt.img"
 	[ -f "$D/key" ] || ssh-keygen -q -t ed25519 -N '' -C fullcone-lab -f "$D/key"
 
+	l=$(losetup -f --show -o $(($(partx -g -o START -n 2 "$D/openwrt.img") * 512)) "$D/openwrt.img")
+	resize2fs -f "$l" >/dev/null
 	mkdir -p "$D/mnt"
-	mount -o loop,offset=$(($(partx -g -o START -n 2 "$D/openwrt.img") * 512)) "$D/openwrt.img" "$D/mnt"
+	mount "$l" "$D/mnt"
 	install -D -m 600 "$D/key.pub" "$D/mnt/etc/dropbear/authorized_keys"
 	# mgmt (QEMU user net) keeps the default route for apk; the lab "internet" is routed via pppoe-wan.
 	cat > "$D/mnt/etc/uci-defaults/99-lab" <<-EOF
@@ -51,6 +55,7 @@ up() {
 	exit 0
 	EOF
 	umount "$D/mnt"
+	losetup -d "$l"
 
 	for t in fcl-tap0 fcl-tap1; do
 		ip tuntap add "$t" mode tap

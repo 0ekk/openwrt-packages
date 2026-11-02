@@ -6,6 +6,7 @@ Actions and published on GitHub Pages: `https://0ekk.github.io/openwrt-packages/
 | Packages | What |
 |---|---|
 | `luci-app-fullcone`, `fullcone`, `kmod-ipt-fullconenat`, `iptables-mod-fullconenat` | IPv4 UDP full cone NAT (NAT1) for firewall4: [docs/fullcone.md](docs/fullcone.md) |
+| `luci-app-openclash` | [OpenClash](https://github.com/vernesong/OpenClash) release file, published unchanged |
 
 Builds exist for each file in [sdk/](sdk/) (now: 25.12.5 and 25.12.6, x86/64). Kernel modules
 only install on the exact kernel of that release.
@@ -36,6 +37,9 @@ repository. Firmware upgrades (attended sysupgrade cannot include feed packages)
 2. Optional QEMU test: `test/<name>/check.sh`, sourced by `test/lab.sh check`.
 3. Bump `PKG_RELEASE` (or the version) on every change, otherwise `apk upgrade` ignores it.
 4. Push to `main`: the `feed` workflow builds, signs and publishes.
+
+A noarch package whose upstream release file should be published unchanged needs no build:
+add `<sha256> <url>` to [prebuilt.list](prebuilt.list); to update it, replace the line.
 
 ## Add a release or target
 

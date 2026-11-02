@@ -27,8 +27,11 @@ with apk after the reboot.
 ## Before
 
 1. Take a VM snapshot or another full backup.
-2. Put the `.apk` files of files-only packages in `/root/thirdparty/` (the router does not keep
-   them after installing).
+2. Packages from outside the official feeds: put the `.apk` files of packages that are in no feed
+   in `/root/thirdparty/` (the router does not keep them after installing). Add a third-party feed
+   with many packages as a tagged repository (`@<tag> <url>` in `customfeeds.list`, install with
+   `apk add <package>@<tag>`) so it cannot replace official packages; owut ignores tagged feeds and
+   reports their packages as missing, which does not stop a `--clean-slate` upgrade.
 3. Save the package list and the enabled services:
    `mkdir -p /root/upgrade && cp /etc/apk/world /root/upgrade/world && ls /etc/rc.d > /root/upgrade/rc.d`
 4. Remove a `/etc` line from `/etc/sysupgrade.conf` and add your own files instead. `/etc/config`
@@ -39,8 +42,8 @@ with apk after the reboot.
    `apk audit /etc` shows edited package files that are not config files. Also add directories
    with your own binaries (e.g. `/usr/local/bin`) and the `rc.d` links of your own init scripts.
 5. Check `sysupgrade -l`: it must not list `/etc/apk/world`, `/etc/openwrt_release` or
-   `/etc/rootpt-resize`; it must list `/etc/apk/keys/openwrt-packages.pem`,
-   `/etc/apk/repositories.d/customfeeds.list` and `/root/thirdparty/`.
+   `/etc/rootpt-resize`; it must list the key of every non-official feed in `/etc/apk/keys/`
+   (e.g. `openwrt-packages.pem`), `/etc/apk/repositories.d/customfeeds.list` and `/root/thirdparty/`.
 
 ## Upgrade
 
@@ -56,9 +59,10 @@ installed packages fit the default root size, `-r <feed and files-only packages>
 ## After
 
 1. Point the feed at the new release (and re-apply a download mirror in `distfeeds.list` if used):
-   `sed -i "s|/<old>/|/<new>/|" /etc/apk/repositories.d/customfeeds.list`
-2. Reinstall the saved package list without version pins and file hashes:
-   `apk update && apk add $(grep -vE '=|><' /root/upgrade/world)`
+   `sed -i "s|/<old>/|/<new>/|" /etc/apk/repositories.d/customfeeds.list`. Feeds whose URL only
+   names the series (e.g. `.../25.12/...`) stay as they are within it.
+2. Reinstall the saved package list without version pins and file hashes (`<package>@<tag>`
+   entries stay): `apk update && apk add $(grep -vE '=|><' /root/upgrade/world)`
 3. Reinstall files-only packages: `apk add --allow-untrusted /root/thirdparty/*.apk`
 4. Compare services: `ls /etc/rc.d | grep -vxF -f /root/upgrade/rc.d` (newly enabled) and
    `ls /etc/rc.d | grep -vxF -f - /root/upgrade/rc.d` (no longer enabled).
