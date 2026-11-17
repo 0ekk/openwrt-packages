@@ -1,0 +1,229 @@
+Harden the target against inputs that would oops (and so reboot a router built
+with CONFIG_PANIC_ON_OOPS=y). Every case below logs a ratelimited kernel message
+and continues or rejects the rule instead of crashing:
+
+- fullconenat_tg()/fullconenat_tg6(): nf_ct_get() can return NULL (notrack,
+  conntrack table full); return XT_CONTINUE instead of dereferencing it.
+- Masquerade path: only set masq_index when the out device is known.
+- get_device_ip(): read ip_ptr and ifa_list through the RCU accessors.
+- find_appropriate_port(): port math in u32 (no u16 wrap to 0), at most 128
+  probes from a random start under the global spinlock, and never free a live
+  mapping; if no port is free, do plain SNAT with the rule's range and record
+  no mapping.
+- fullconenat_tg_check(): reject non-IPv4 rules (fullconenat_tg6() has the same
+  unbounded search and is not shipped), rules outside init_net (the mapping
+  table is global), rangesize != 1, an inverted --to-source range and a
+  --to-ports range starting at 0 or inverted; return nf_ct_netns_get() errors
+  instead of ignoring them (destroy would then drop a reference never taken).
+
+--- a/xt_FULLCONENAT.c
++++ b/xt_FULLCONENAT.c
+@@ -438,6 +438,10 @@
+   ret = XT_CONTINUE;
+ 
+   ct = nf_ct_get(skb, &ctinfo);
++  if (unlikely(ct == NULL)) {
++    pr_info_ratelimited("xt_FULLCONENAT: no conntrack, skipping\n");
++    return XT_CONTINUE;
++  }
+   net = nf_ct_net(ct);
+   zone = nf_ct_zone(ct);
+ 
+@@ -497,7 +501,7 @@
+ #else
+       nat = nfct_nat(ct);
+ #endif
+-      if (likely(nat))
++      if (likely(nat) && likely(xt_out(par)))
+         nat->masq_index = xt_out(par)->ifindex;
+ 
+     }
+@@ -961,12 +965,12 @@
+   }
+ 
+   rcu_read_lock();
+-  in_dev = dev->ip_ptr;
++  in_dev = __in_dev_get_rcu(dev);
+   if (in_dev == NULL) {
+     rcu_read_unlock();
+     return 0;
+   }
+-  if_info = in_dev->ifa_list;
++  if_info = rcu_dereference(in_dev->ifa_list);
+   if (if_info) {
+     result = if_info->ifa_local;
+     rcu_read_unlock();
+@@ -982,27 +986,31 @@
+ #else
+ static uint16_t find_appropriate_port(struct net *net, const u16 zone, const uint16_t original_port, const __be32 ext_ip, const struct nf_nat_ipv4_range *range) {
+ #endif
+-  uint16_t min, start, selected, range_size, i;
++  uint16_t min, start, selected;
++  u32 range_size, attempts, i;
+   struct nat_mapping* mapping = NULL;
+ 
+   if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+     min = be16_to_cpu((range->min).udp.port);
+-    range_size = be16_to_cpu((range->max).udp.port) - min + 1;
++    range_size = (u32)be16_to_cpu((range->max).udp.port) - (u32)min + 1;
+   } else {
+     /* minimum port is 1024. same behavior as default linux NAT. */
+     min = 1024;
+     range_size = 65535 - min + 1;
+   }
+ 
++  /* cap the port search to avoid holding the global spinlock too long */
++  attempts = min_t(u32, range_size, 128);
++
+   if ((range->flags & NF_NAT_RANGE_PROTO_RANDOM)
+     || (range->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+     /* for now we do the same thing for both --random and --random-fully */
+ 
+     /* select a random starting point */
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+-    start = (uint16_t)(get_random_u32() % (u32)range_size);
++    start = (uint16_t)(get_random_u32() % range_size);
+ #else
+-    start = (uint16_t)(prandom_u32() % (u32)range_size);
++    start = (uint16_t)(prandom_u32() % range_size);
+ #endif
+   } else {
+ 
+@@ -1015,11 +1023,15 @@
+       }
+     }
+ 
+-    /* otherwise, we start from zero */
+-    start = 0;
++    /* start from a random offset so probes spread across the range */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++    start = (uint16_t)(get_random_u32() % range_size);
++#else
++    start = (uint16_t)(prandom_u32() % range_size);
++#endif
+   }
+ 
+-  for (i = 0; i < range_size; i++) {
++  for (i = 0; i < attempts; i++) {
+     /* 2. try to find an available port */
+     selected = min + ((start + i) % range_size);
+     mapping = get_mapping_by_ext_port(selected, ext_ip, net, zone);
+@@ -1028,12 +1040,8 @@
+     }
+   }
+ 
+-  /* 3. at least we tried. override a previous mapping. */
+-  selected = min + start;
+-  mapping = get_mapping_by_ext_port(selected, ext_ip, net, zone);
+-  kill_mapping(mapping);
+-
+-  return selected;
++  /* all probed ports taken; return 0 to signal plain SNAT (no mapping) */
++  return 0;
+ }
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+@@ -1076,6 +1084,7 @@
+ 
+   struct nat_mapping *mapping, *src_mapping;
+   unsigned int ret;
++  int skip_mapping = 0;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+   struct nf_nat_range2 newrange;
+ #else
+@@ -1097,6 +1106,10 @@
+   ret = XT_CONTINUE;
+ 
+   ct = nf_ct_get(skb, &ctinfo);
++  if (unlikely(ct == NULL)) {
++    pr_info_ratelimited("xt_FULLCONENAT: no conntrack, skipping\n");
++    return XT_CONTINUE;
++  }
+   net = nf_ct_net(ct);
+   zone = nf_ct_zone(ct);
+ 
+@@ -1160,7 +1173,7 @@
+ #else
+       nat = nfct_nat(ct);
+ #endif
+-      if (likely(nat))
++      if (likely(nat) && likely(xt_out(par)))
+         nat->masq_index = xt_out(par)->ifindex;
+ 
+     }
+@@ -1199,9 +1212,15 @@
+         }
+         want_port = find_appropriate_port(net, zone, original_port, newrange.min_addr.ip, range);
+ 
+-        newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
+-        newrange.min_proto.udp.port = cpu_to_be16(want_port);
+-        newrange.max_proto = newrange.min_proto;
++        if (want_port == 0) {
++          /* all probed ports taken: plain SNAT with the rule's own range, no mapping */
++          pr_info_ratelimited("xt_FULLCONENAT: no free port, falling back to plain SNAT\n");
++          skip_mapping = 1;
++        } else {
++          newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
++          newrange.min_proto.udp.port = cpu_to_be16(want_port);
++          newrange.max_proto = newrange.min_proto;
++        }
+ 
+         src_mapping = NULL;
+ 
+@@ -1215,8 +1234,8 @@
+       /* non-UDP packets, bailout */
+       return ret;
+     }
+-    if (ret != NF_ACCEPT) {
+-      /* failed SNAT, bailout */
++    if (ret != NF_ACCEPT || skip_mapping) {
++      /* failed SNAT, or plain SNAT without a mapping: bailout */
+       spin_unlock_bh(&fullconenat_lock);
+       return ret;
+     }
+@@ -1247,7 +1266,44 @@
+ 
+ static int fullconenat_tg_check(const struct xt_tgchk_param *par)
+ {
+-  nf_ct_netns_get(par->net, par->family);
++  const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
++  int ret;
++
++  if (par->family != NFPROTO_IPV4) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected non-IPv4 family %u\n", par->family);
++    return -EINVAL;
++  }
++
++  if (!net_eq(par->net, &init_net)) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected non-init netns\n");
++    return -EINVAL;
++  }
++
++  if (mr->rangesize != 1) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected rangesize %u != 1\n", mr->rangesize);
++    return -EINVAL;
++  }
++
++  if ((mr->range[0].flags & NF_NAT_RANGE_MAP_IPS) &&
++      ntohl(mr->range[0].min_ip) > ntohl(mr->range[0].max_ip)) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected inverted IP range\n");
++    return -EINVAL;
++  }
++
++  if (mr->range[0].flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
++    uint16_t pmin = be16_to_cpu(mr->range[0].min.udp.port);
++    uint16_t pmax = be16_to_cpu(mr->range[0].max.udp.port);
++    if (pmin == 0 || pmax < pmin) {
++      pr_info_ratelimited("xt_FULLCONENAT: rejected invalid port range %u-%u\n", pmin, pmax);
++      return -EINVAL;
++    }
++  }
++
++  ret = nf_ct_netns_get(par->net, par->family);
++  if (ret < 0) {
++    pr_info_ratelimited("xt_FULLCONENAT: nf_ct_netns_get failed: %d\n", ret);
++    return ret;
++  }
+ 
+   mutex_lock(&nf_ct_net_event_lock);
+ 

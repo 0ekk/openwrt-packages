@@ -1,4 +1,8 @@
 # Filled by /usr/share/fullcone/fullcone.sh only after the FULLCONENAT rules are in place.
+set fullcone_proto {
+	type inet_proto
+}
+
 set fullcone_lan {
 	type ipv4_addr
 	flags interval

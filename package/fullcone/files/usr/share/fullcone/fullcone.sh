@@ -1,5 +1,5 @@
 #!/bin/sh
-# UDP full cone NAT for fw4 via xt_FULLCONENAT (iptables-nft, table ip nat).
+# UDP (and, with option tcp, TCP) full cone NAT for fw4 via xt_FULLCONENAT (iptables-nft, table ip nat).
 # fw4 sources this file as a firewall include with no arguments (= apply) after every
 # start/reload; it must never call fw4 itself (fw4 holds its lock while running includes).
 # Usage: fullcone.sh [apply|status|stop]; FULLCONE_FORCE=1 applies while disabled in uci.
@@ -34,7 +34,13 @@ fc_wan() {
 	esac
 }
 
+# One list drives both the FULLCONENAT rules and the fw4 bypass set, so they cannot disagree.
+fc_protos() {
+	if [ "$(fc_get tcp)" = 1 ]; then echo "udp tcp"; else echo udp; fi
+}
+
 fc_sets_flush() {
+	nft flush set inet fw4 fullcone_proto 2>/dev/null
 	nft flush set inet fw4 fullcone_lan 2>/dev/null
 	nft flush set inet fw4 fullcone_wan 2>/dev/null
 }
@@ -46,17 +52,19 @@ fc_rmmod() {
 }
 
 fc_rules() {
-	local lan=$1 wan=$2 p
+	local lan=$1 wan=$2 protos=$3 proto p
 	[ -n "$lan" ] && [ -n "$wan" ] && modprobe xt_FULLCONENAT || return 1
-	for p in $(fc_get exclude_port); do
-		$IPT -A FULLCONE_PRE -i "$wan" -p udp --dport "$p" -j RETURN || return 1
+	for proto in $protos; do
+		for p in $(fc_get exclude_port); do
+			$IPT -A FULLCONE_PRE -i "$wan" -p "$proto" --dport "$p" -j RETURN || return 1
+		done
+		$IPT -A FULLCONE_PRE -i "$wan" -p "$proto" -j FULLCONENAT &&
+		$IPT -A FULLCONE_POST -o "$wan" -s "$lan" -p "$proto" -j FULLCONENAT || return 1
 	done
-	$IPT -A FULLCONE_PRE -i "$wan" -p udp -j FULLCONENAT &&
-	$IPT -A FULLCONE_POST -o "$wan" -s "$lan" -p udp -j FULLCONENAT
 }
 
 fc_apply() {
-	local lan wan c
+	local lan wan protos c
 	# Sets first: an empty set makes fw4 masquerade everything again.
 	fc_sets_flush
 	for c in PRE POST; do
@@ -73,7 +81,9 @@ fc_apply() {
 
 	lan=$(fc_lan)
 	wan=$(fc_wan)
-	if fc_rules "$lan" "$wan" &&
+	protos=$(fc_protos)
+	if fc_rules "$lan" "$wan" "$protos" &&
+		nft add element inet fw4 fullcone_proto "{ $(echo $protos | tr ' ' ',') }" &&
 		nft add element inet fw4 fullcone_lan "{ $lan }" &&
 		nft add element inet fw4 fullcone_wan "{ \"$wan\" }"; then
 		return 0
@@ -81,7 +91,7 @@ fc_apply() {
 	fc_sets_flush
 	$IPT -F FULLCONE_PRE 2>/dev/null
 	$IPT -F FULLCONE_POST 2>/dev/null
-	logger -t fullcone -p daemon.warn "apply failed (lan='$lan' wan='$wan'), staying on fw4 masquerade"
+	logger -t fullcone -p daemon.warn "apply failed (lan='$lan' wan='$wan' protos='$protos'), staying on fw4 masquerade"
 	return 1
 }
 
@@ -99,12 +109,13 @@ fc_stop() {
 }
 
 fc_status() {
-	local en=false forced=false loaded=false mode lan wan wanip rules sets inbound=0
+	local en=false forced=false loaded=false tcp=false mode lan wan wanip rules sets inbound="0 0"
 	[ "$(fc_get enabled)" = 1 ] && en=true
 	grep -q '^xt_FULLCONENAT ' /proc/modules && loaded=true
 	lan=$(fc_lan)
 	wan=$(fc_wan)
 	rules=$($IPT -S FULLCONE_POST 2>/dev/null | grep -c FULLCONENAT)
+	$IPT -S FULLCONE_POST 2>/dev/null | grep -q -e '-p tcp .*-j FULLCONENAT' && tcp=true
 	sets=$(nft list set inet fw4 fullcone_wan 2>/dev/null | grep -c elements)
 	if [ "$rules" -gt 0 ] && [ "$sets" -gt 0 ]; then
 		mode=fullcone
@@ -116,18 +127,18 @@ fc_status() {
 	else
 		mode=disabled
 	fi
-	# Inbound UDP flows DNATed into the LAN: original dst is the WAN IP, reply src is not.
+	# Inbound UDP/TCP flows DNATed into the LAN: original dst is the WAN IP, reply src is not.
 	wanip=$(ip -4 -o addr show dev "$wan" 2>/dev/null | awk '{ sub("/.*", "", $4); print $4; exit }')
-	[ -n "$wanip" ] && inbound=$(awk -v w="$wanip" '$3 == "udp" {
+	[ -n "$wanip" ] && inbound=$(awk -v w="$wanip" '$3 == "udp" || $3 == "tcp" {
 		d = ""; r = ""; n = 0
 		for (i = 4; i <= NF; i++) {
 			if ($i ~ /^dst=/ && d == "") d = substr($i, 5)
 			if ($i ~ /^src=/ && ++n == 2) r = substr($i, 5)
 		}
-		if (d == w && r != "" && r != w) c++
-	} END { print c + 0 }' /proc/net/nf_conntrack)
-	printf '{"enabled":%s,"forced":%s,"module_loaded":%s,"mode":"%s","lan":"%s","wan":"%s","inbound_udp":%d}\n' \
-		$en $forced $loaded $mode "$lan" "$wan" "$inbound"
+		if (d == w && r != "" && r != w) c[$3]++
+	} END { print c["udp"] + 0, c["tcp"] + 0 }' /proc/net/nf_conntrack)
+	printf '{"enabled":%s,"forced":%s,"module_loaded":%s,"tcp":%s,"mode":"%s","lan":"%s","wan":"%s","inbound_udp":%d,"inbound_tcp":%d}\n' \
+		$en $forced $loaded $tcp $mode "$lan" "$wan" "${inbound% *}" "${inbound#* }"
 }
 
 case "$1" in

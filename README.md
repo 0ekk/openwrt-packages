@@ -5,7 +5,7 @@ Actions and published on GitHub Pages: `https://0ekk.github.io/openwrt-packages/
 
 | Packages | What |
 |---|---|
-| `luci-app-fullcone`, `fullcone`, `kmod-ipt-fullconenat`, `iptables-mod-fullconenat` | IPv4 UDP full cone NAT (NAT1) for firewall4: [docs/fullcone.md](docs/fullcone.md) |
+| `luci-app-fullcone`, `fullcone`, `kmod-ipt-fullconenat`, `iptables-mod-fullconenat` | IPv4 UDP (and optional TCP) full cone NAT (NAT1) for firewall4: [docs/fullcone.md](docs/fullcone.md) |
 | `luci-app-openclash` | [OpenClash](https://github.com/vernesong/OpenClash) release file, published unchanged |
 
 Builds exist for each file in [sdk/](sdk/) (now: 25.12.5 and 25.12.6, x86/64). Kernel modules

@@ -1,9 +1,11 @@
 config fullcone 'main'
 	option enabled '0'
+	# Also TCP: inbound TCP to a port a LAN host connected from reaches that host
+	option tcp '0'
 	# Empty: derived from network.lan / network.wan
 	option lan_subnet ''
 	option wan_device ''
-	# Inbound UDP ports kept for VPN / remote-access services on the router itself
+	# Inbound ports (UDP, and TCP with option tcp) kept for VPN / remote-access services on the router itself
 	list exclude_port '41641'
 	list exclude_port '51820'
 	list exclude_port '9993'
