@@ -3,11 +3,14 @@
 
 Usage: pages-index.py SITE BASE_URL COMMIT
 BASE_URL is the published root (https://<owner>.github.io/<repo>/). A directory holding a
-packages.adb is a feed: its page shows the repository line, and the root page shows the install
-commands for every feed. Exits 1 if a generated link points to nothing, so the deploy stops.
+packages.adb is a feed (layout: .github/feed-site.sh): <release>/packages/<arch>/,
+<release>/targets/<target>/, or the old single feed <release>/<target>/. Feed pages show their
+repository line (the old one: how to switch); the root page shows the install commands, both lines
+per target. Exits 1 if a generated link points to nothing, so the deploy stops.
 """
 import datetime
 import html
+import json
 import os
 import re
 import sys
@@ -51,6 +54,50 @@ def pre(*lines):
     return "<pre>" + html.escape("\n".join(lines)) + "</pre>"
 
 
+def kind(feed):
+    """'packages', 'targets' or 'legacy' for a feed path such as 25.12.5/targets/x86/64."""
+    second = feed.split("/")[1:2]
+    return second[0] if second in (["packages"], ["targets"]) else "legacy"
+
+
+def arch(site, feed):
+    with open(os.path.join(site, feed, "index.json"), encoding="utf-8") as f:
+        return json.load(f)["architecture"]
+
+
+def echo(base, feed):
+    return f"echo {base}{feed}/packages.adb >> {REPO_LIST}"
+
+
+def install_blocks(site, base, feeds):
+    """(heading, lines) per target: its packages and targets feed lines, then apk update. A
+    packages feed no target refers to gets a block of its own."""
+    blocks, used = [], set()
+    for t in (f for f in feeds if kind(f) == "targets"):
+        rel, target = t.split("/targets/", 1)
+        a = arch(site, t)
+        p = f"{rel}/packages/{a}"
+        lines = [echo(base, t)]
+        if p in feeds:
+            lines.insert(0, echo(base, p))
+            used.add(p)
+        blocks.append((f"{rel} · {target} ({a})", lines + ["apk update"]))
+    for p in (f for f in feeds if kind(f) == "packages" and f not in used):
+        rel, _, a = p.split("/", 2)
+        blocks.append((f"{rel} · {a}", [echo(base, p), "apk update"]))
+    return blocks
+
+
+def switch_lines(site, base, feeds, old):
+    """Commands that replace the old single feed with the split ones."""
+    rel, target = old.split("/", 1)
+    p, t = f"{rel}/packages/{arch(site, old)}", f"{rel}/targets/{target}"
+    lines = [f"sed -i 's#/{old}/packages.adb#/{p}/packages.adb#' {REPO_LIST}"]
+    if t in feeds:
+        lines.append(echo(base, t))
+    return lines + ["apk update"]
+
+
 def page(site, rel, base, root_name, footer, feeds, keys):
     path = os.path.join(site, rel)
     parts = [p for p in rel.split("/") if p]
@@ -67,15 +114,24 @@ def page(site, rel, base, root_name, footer, feeds, keys):
             body.append("<h2>Use the feed</h2><p>Add the signing key once:</p>")
             body.append(pre(f"wget -O /etc/apk/keys/{keys[0]} {base}keys/{keys[0]}",
                             f"echo /etc/apk/keys/{keys[0]} >> /etc/sysupgrade.conf"))
-        body.append("<p>Then add the feed of your release and target, and update:</p>")
-        for f in feeds:
-            rel_f, target = f.split("/", 1)
-            body.append(f"<h3>{html.escape(rel_f)} · {html.escape(target)}</h3>")
-            body.append(pre(f"echo {base}{f}/packages.adb >> {REPO_LIST}", "apk update"))
+        body.append("<p>Then add the two feeds of your release and target (packages for the "
+                    "architecture, kernel modules for the target), and update:</p>")
+        for heading, lines in install_blocks(site, base, feeds):
+            body.append(f"<h3>{html.escape(heading)}</h3>")
+            body.append(pre(*lines))
+        if any(kind(f) == "legacy" for f in feeds):
+            body.append("<p>Routers set up before 2026-11-18 use the old single feed "
+                        "<code>&lt;release&gt;/&lt;target&gt;/packages.adb</code>. It still works "
+                        "for now; its page shows the commands to switch.</p>")
         body.append("<h2>Files</h2>")
-    elif os.path.isfile(os.path.join(path, "packages.adb")):
-        body.append(pre(f"echo {base}{rel}/packages.adb >> {REPO_LIST}"))
-        body.append(f'<p>Signing key and install steps: <a href="{"../" * up}">feed root</a>.</p>')
+    elif rel in feeds and kind(rel) == "legacy":
+        body.append("<p><strong>Deprecated:</strong> this single feed will be removed. Switch "
+                    "to the split feeds:</p>")
+        body.append(pre(*switch_lines(site, base, feeds, rel)))
+    elif rel in feeds:
+        body.append(pre(echo(base, rel)))
+        body.append("<p>A router needs both the packages feed of its architecture and the targets "
+                    f'feed of its target: see the <a href="{"../" * up}">feed root</a>.</p>')
 
     rows = [] if not parts else ['<tr><td><a href="../">../</a></td><td class="s">-</td></tr>']
     entries = sorted(os.scandir(path), key=lambda e: (not e.is_dir(), e.name))
