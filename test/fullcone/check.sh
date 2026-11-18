@@ -3,6 +3,12 @@ NAT="ip netns exec fcl-lan python3 -I $TOP/test/fullcone/check_nat.py 203.0.113.
 # Runs on the lab host and enters both netns; each run takes its own LAN port (TIME_WAIT).
 CONE="python3 -I $TOP/test/fullcone/check_cone.py"
 IPT6="xtables-nft-multi ip6tables-nft -w -t nat"
+# Switches go through the two ways a user changes them: LuCI (luci_set) and the documented shell
+# command (CLI). reload_config is not one of them: it skips changes it has not seen before.
+luci_set() {
+	vm "sh -s $1 $2" < "$TOP/test/fullcone/luci_set.sh" || fail "LuCI apply of $1=$2 failed"
+}
+CLI='uci commit fullcone && /etc/init.d/fullcone reload 2>/dev/null'
 
 vm 'uci set fullcone.main.enabled=0 && uci set fullcone.main.tcp=0 && uci set fullcone.main.ipv6=0 && uci commit fullcone && /etc/init.d/firewall reload 2>/dev/null; dmesg -c >/dev/null'
 
@@ -14,7 +20,7 @@ vm '/usr/share/fullcone/fullcone.sh status' | grep -q '"mode":"fullcone"' || fai
 $NAT >/dev/null || fail "forced: not full cone"
 ok "forced: full cone"
 
-vm 'uci set fullcone.main.enabled=1 && uci commit fullcone && reload_config && sleep 3 && /etc/init.d/firewall reload 2>/dev/null'
+vm "uci set fullcone.main.enabled=1 && $CLI && /etc/init.d/firewall reload 2>/dev/null"
 $NAT >/dev/null || fail "enabled + firewall reload: not full cone"
 vm 'conntrack -L -p udp 2>/dev/null' | grep -q 'src=203.0.113.2 .*\[UNREPLIED\] src=192.168.1.100' ||
 	fail "no inbound DNAT entry from the STUN alternate address"
@@ -23,13 +29,13 @@ ok "enabled: full cone across firewall reload, inbound DNAT seen"
 ! $CONE tcp 4 40400 >/dev/null || fail "tcp off: TCP already full cone"
 ok "tcp off: TCP keeps masquerade"
 
-vm 'uci set fullcone.main.tcp=1 && uci commit fullcone && reload_config && sleep 3'
+luci_set tcp 1
 vm '/usr/share/fullcone/fullcone.sh status' | grep -q '"tcp":true' || fail "tcp on: status does not report tcp"
 $CONE tcp 4 40410 >/dev/null || fail "tcp on: not TCP full cone"
 vm 'conntrack -L -p tcp 2>/dev/null' | grep -q 'src=203.0.113.2 .*src=192.168.1.100' ||
 	fail "tcp on: no inbound TCP DNAT entry"
 $NAT >/dev/null || fail "tcp on: UDP no longer full cone"
-ok "tcp on: TCP and UDP full cone, inbound TCP DNAT seen"
+ok "tcp on (LuCI): TCP and UDP full cone, inbound TCP DNAT seen"
 
 # As on the router: established flows are offloaded and skip the nft chains.
 vm 'uci set firewall.@defaults[0].flow_offloading=1 && uci commit firewall && /etc/init.d/firewall reload 2>/dev/null'
@@ -67,7 +73,7 @@ ok "no free port: plain SNAT in the rule's range, logged"
 ! $CONE udp 6 40500 >/dev/null || fail "ipv6 off: IPv6 UDP already full cone"
 ok "ipv6 off: IPv6 keeps fw4 masq6"
 
-vm 'uci set fullcone.main.ipv6=1 && uci commit fullcone && reload_config && sleep 3'
+luci_set ipv6 1
 vm '/usr/share/fullcone/fullcone.sh status' | grep -q '"ipv6":"active"' || fail "ipv6 on: status does not report ipv6 active"
 $CONE udp 6 40510 >/dev/null || fail "ipv6 on: IPv6 UDP not full cone"
 $CONE tcp 6 40511 >/dev/null || fail "ipv6 on: IPv6 TCP not full cone"
@@ -77,7 +83,7 @@ $NAT >/dev/null || fail "ipv6 on: IPv4 UDP no longer full cone"
 flows=$(vm '/usr/share/fullcone/fullcone.sh status | jsonfilter -e "@.flows[*].lan"')
 echo "$flows" | grep -qx 'fd00:0001:0000:0000:0000:0000:0000:0100' || fail "ipv6 on: status flows lack the IPv6 LAN host"
 echo "$flows" | grep -qx '192.168.1.100' || fail "ipv6 on: status flows lack the IPv4 LAN host"
-ok "ipv6 on: IPv6 UDP and TCP full cone, inbound DNAT and status flows seen, IPv4 unchanged"
+ok "ipv6 on (LuCI): IPv6 UDP and TCP full cone, inbound DNAT and status flows seen, IPv4 unchanged"
 
 vm "$IPT6 -A FULLCONE_POST -o pppoe-wan -p udp -j FULLCONENAT --to-ports 0-65535 --random" 2>/dev/null &&
 	fail "IPv6 --to-ports 0-65535 accepted"
@@ -120,20 +126,21 @@ for f in 4 6; do
 	ok "flood IPv$f: $n of 20000 new inbound flows on one mapping tracked"
 done
 
-vm 'uci set fullcone.main.ipv6=0 && uci commit fullcone && reload_config && sleep 3'
+luci_set ipv6 0
 vm 'nft list chain ip6 nat FULLCONE_POST' >/dev/null 2>&1 && fail "ipv6 off again: IPv6 FULLCONE chain still present"
 ! $CONE udp 6 40520 >/dev/null || fail "ipv6 off again: IPv6 UDP still full cone"
-ok "ipv6 off again: IPv6 back to fw4 masq6"
+ok "ipv6 off again (LuCI): IPv6 back to fw4 masq6"
 
 vm 'dmesg' | grep -q -E 'WARNING|BUG|Oops' && fail "kernel warning in dmesg"
 ok "dmesg clean"
 
-vm 'uci set fullcone.main.tcp=0 && uci commit fullcone && reload_config && sleep 3'
+# As right after a boot, when reload_config would apply nothing.
+vm "rm -f /var/run/config.md5; uci set fullcone.main.tcp=0 && $CLI"
 vm 'nft list set inet fw4 fullcone_proto' | grep -q tcp && fail "tcp off again: tcp still in fullcone_proto"
 ! $CONE tcp 4 40420 >/dev/null || fail "tcp off again: still TCP full cone"
-ok "tcp off again: TCP keeps masquerade"
+ok "tcp off again (CLI, after boot): TCP keeps masquerade"
 
-vm 'uci set fullcone.main.enabled=0 && uci commit fullcone && reload_config && sleep 3'
+vm "uci set fullcone.main.enabled=0 && $CLI"
 vm 'grep -q "^xt_FULLCONENAT " /proc/modules' && fail "disabled: module still loaded"
 ! $NAT >/dev/null || fail "disabled again: still full cone"
-ok "disabled again: module unloaded, stock masquerade"
+ok "disabled again (CLI): module unloaded, stock masquerade"
