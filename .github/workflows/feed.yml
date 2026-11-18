@@ -2,7 +2,7 @@ name: feed
 
 # Builds package/ for every sdk/*.env and publishes signed apk feeds with the public key on
 # GitHub Pages (layout: .github/feed-site.sh): <pages>/<release>/packages/<arch>/ and
-# <pages>/<release>/targets/<target>/, plus the old <pages>/<release>/<target>/ for now.
+# <pages>/<release>/targets/<target>/.
 # Only package inputs trigger a build: a rebuild would republish the same versions with new
 # hashes. After editing this workflow or a script in .github/, start it by hand
 # (workflow_dispatch).

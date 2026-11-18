@@ -5,8 +5,6 @@
 #   APK_SIGN_KEY=<private key PEM> .github/feed-site.sh SDK_ENV SITE
 #   SITE/<release>/packages/<arch>/   kernel-independent packages
 #   SITE/<release>/targets/<target>/  kmods: they only install on this target's kernel
-#   SITE/<release>/<target>/          everything in one feed: the path used before 2026-11-18,
-#                                     kept until the routers using it have switched
 # Each directory gets packages.adb (signed, then verified against KEYS_DIR, default keys/) and
 # index.json (unsigned package list, as the SDK makes it; owut reads it). The key file only
 # exists while apk signs; the SDK's scripts run after it is deleted.
@@ -31,7 +29,6 @@ done
 feeds=
 [ -z "$pkgs" ] || feeds="$feeds $REL/packages/$arch"
 [ -z "$kmods" ] || feeds="$feeds $REL/targets/$TARGET"
-feeds="$feeds $REL/$TARGET"
 
 key=$(mktemp)
 trap 'rm -f "$key"' EXIT
@@ -40,8 +37,7 @@ printf '%s\n' "$APK_SIGN_KEY" > "$key"
 for f in $feeds; do
 	case $f in
 	*/packages/*) set -- $pkgs ;;
-	*/targets/*) set -- $kmods ;;
-	*) set -- $pkgs $kmods ;;
+	*) set -- $kmods ;;
 	esac
 	mkdir -p "$site/$f"
 	cp "$@" "$site/$f/"

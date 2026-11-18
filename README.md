@@ -25,14 +25,8 @@ apk add luci-app-fullcone
 
 Like the official download server, packages are split by architecture (`packages/<arch>/`) and
 kernel modules by target (`targets/<target>/`, they only install on that target's kernel); a
-router needs both lines. Routers set up before 2026-11-18 have the old single feed
-`25.12.5/x86/64/packages.adb`, which still works for now. To switch:
-
-```sh
-sed -i 's#/25.12.5/x86/64/packages.adb#/25.12.5/packages/x86_64/packages.adb#' /etc/apk/repositories.d/customfeeds.list
-echo https://0ekk.github.io/openwrt-packages/25.12.5/targets/x86/64/packages.adb >> /etc/apk/repositories.d/customfeeds.list
-apk update
-```
+router needs both lines. The single feed `<release>/<target>/packages.adb` used before
+2026-11-18 is gone: replace that line with the two above.
 
 Upgrade: `apk update && apk upgrade` (everything), or only these packages with
 `apk add -u luci-app-fullcone fullcone iptables-mod-fullconenat kmod-ipt-fullconenat`, which
