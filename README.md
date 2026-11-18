@@ -1,7 +1,8 @@
 # openwrt-packages
 
 A small apk feed for stock OpenWrt (25.12 and later), built with the official SDK on GitHub
-Actions and published on GitHub Pages: `https://0ekk.github.io/openwrt-packages/`.
+Actions and published on GitHub Pages: `https://0ekk.github.io/openwrt-packages/` (a browsable
+index with the install commands for every feed).
 
 | Packages | What |
 |---|---|

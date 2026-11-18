@@ -3,7 +3,8 @@ name: feed
 # Builds package/ for every sdk/*.env, signs one apk index per release/target and publishes
 # them with the public key on GitHub Pages: <pages>/<release>/<target>/packages.adb.
 # Only package inputs trigger a build: a rebuild would republish the same versions with new
-# hashes. After editing this workflow, start it by hand (workflow_dispatch).
+# hashes. After editing this workflow or .github/pages-index.py, start it by hand
+# (workflow_dispatch).
 on:
   push:
     branches: [main]
@@ -83,6 +84,9 @@ jobs:
           path: site
           merge-multiple: true
       - run: cp -r keys site/
+      # An "Index of" page per directory (the root one has the install commands); fails on a
+      # broken link before anything is published.
+      - run: python3 -I .github/pages-index.py site "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/" "$GITHUB_SHA"
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
