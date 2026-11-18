@@ -8,6 +8,11 @@ set fullcone_lan {
 	flags interval
 }
 
+set fullcone_lan6 {
+	type ipv6_addr
+	flags interval
+}
+
 set fullcone_wan {
 	type ifname
 }

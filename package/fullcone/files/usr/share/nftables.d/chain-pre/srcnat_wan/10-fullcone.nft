@@ -1,1 +1,2 @@
 meta l4proto @fullcone_proto oifname @fullcone_wan ip saddr @fullcone_lan return comment "fullcone: NATed by xt_FULLCONENAT"
+meta l4proto @fullcone_proto oifname @fullcone_wan ip6 saddr @fullcone_lan6 return comment "fullcone: NAT66 by xt_FULLCONENAT"

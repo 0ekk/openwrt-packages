@@ -1,5 +1,6 @@
 #!/bin/sh
 # QEMU lab: the official OpenWrt image behind a PPPoE "ISP" with an RFC 5780 STUN server.
+# IPv6 is NAT66 (fw4 masq6): ULA LAN fd00:1::/48, WAN 2001:db8:a::10, "internet" 2001:db8:b::/64.
 # No bridges (host br_netfilter/forward rules stay out of the way): the VM's LAN tap is
 # moved into netns fcl-lan as the LAN client, its WAN tap into netns fcl-wan as the ISP.
 # Usage (root): test/lab.sh up | check | down. `check` installs out/*.apk and sources every
@@ -49,6 +50,15 @@ up() {
 	add network route
 	set network.@route[-1].interface=wan
 	set network.@route[-1].target=203.0.113.0/24
+	set network.wan.ipv6=1
+	set network.wan6.proto=static
+	set network.wan6.device=@wan
+	set network.wan6.ip6addr=2001:db8:a::10/64
+	add network route6
+	set network.@route6[-1].interface=wan6
+	set network.@route6[-1].target=2001:db8:b::/64
+	set network.globals.ula_prefix=fd00:1::/48
+	set firewall.@zone[1].masq6=1
 	commit
 	EOT
 	sed -i 's#https://downloads.openwrt.org#$MIRROR#' /etc/apk/repositories.d/distfeeds.list
@@ -76,21 +86,26 @@ up() {
 	ip -n fcl-lan link set fcl-tap0 up
 	ip -n fcl-lan addr add 192.168.1.100/24 dev fcl-tap0
 	ip -n fcl-lan route add default via 192.168.1.1
+	ip -n fcl-lan addr add fd00:1::100/64 dev fcl-tap0 nodad
+	ip -n fcl-lan route add 2001:db8:b::/64 via fd00:1::1
 	ip -n fcl-wan link set lo up
 	ip -n fcl-wan link set fcl-tap1 up
 	ip -n fcl-wan addr add 203.0.113.1/32 dev lo
 	ip -n fcl-wan addr add 203.0.113.2/32 dev lo
+	ip -n fcl-wan addr add 2001:db8:b::1/128 dev lo
+	ip -n fcl-wan addr add 2001:db8:b::2/128 dev lo
 	# User-mode PPPoE: rp-pppoe's kernel-mode plugin breaks whenever pppd is upgraded.
-	printf 'noauth\nlcp-echo-interval 10\nlcp-echo-failure 3\nmtu 1492\nmru 1492\nnodefaultroute\n' > "$D/pppoe-options"
+	printf 'noauth\nlcp-echo-interval 10\nlcp-echo-failure 3\nmtu 1492\nmru 1492\nnodefaultroute\n+ipv6\n' > "$D/pppoe-options"
 	ip netns exec fcl-wan pppoe-server -I fcl-tap1 -L 100.64.0.1 -R 100.64.0.10 -N 4 -O "$D/pppoe-options"
 	ip netns exec fcl-wan python3 -I "$TOP/test/stun_server.py" 203.0.113.1 203.0.113.2 >/dev/null 2>&1 &
 
 	i=0
-	until vm 'ifstatus wan | jsonfilter -e @.up' 2>/dev/null | grep -q true; do
+	until vm 'ifstatus wan | jsonfilter -e @.up; ifstatus wan6 | jsonfilter -e @.up' 2>/dev/null | grep -c true | grep -q 2; do
 		i=$((i + 1))
 		[ $i -lt 60 ] || { echo "VM or PPPoE did not come up" >&2; exit 1; }
 		sleep 2
 	done
+	ip -n fcl-wan route add 2001:db8:a::/64 dev "$(ip -n fcl-wan -o link | awk -F': ' '$2 ~ /^ppp/ { print $2; exit }')"
 	# nlbwmon makes ctnetlink load at boot, as on a router that does traffic accounting.
 	vm 'apk update >/dev/null && apk add nlbwmon conntrack >/dev/null && /etc/init.d/nlbwmon enable && /etc/init.d/nlbwmon start'
 	echo "lab up; shell: ssh -i $D/key -p 2222 root@127.0.0.1"

@@ -5,14 +5,14 @@
 # See /LICENSE for more information.
 #
 # Based on ImmortalWrt package/network/utils/fullconenat, trimmed for a stock
-# OpenWrt kernel: IPv4 only, no CONFIG_NF_CONNTRACK_CHAIN_EVENTS kernel hack.
+# OpenWrt kernel: no CONFIG_NF_CONNTRACK_CHAIN_EVENTS kernel hack.
 #
 
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fullconenat
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/llccd/netfilter-full-cone-nat.git
@@ -50,7 +50,7 @@ endef
 
 define Package/iptables-mod-fullconenat/install
 	$(INSTALL_DIR) $(1)/usr/lib/iptables
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libipt_FULLCONENAT.so $(1)/usr/lib/iptables
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libipt_FULLCONENAT.so $(PKG_BUILD_DIR)/libip6t_FULLCONENAT.so $(1)/usr/lib/iptables
 endef
 
 $(eval $(call BuildPackage,iptables-mod-fullconenat))

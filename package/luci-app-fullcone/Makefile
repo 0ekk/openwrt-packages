@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-fullcone
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 PKG_LICENSE:=GPL-2.0
 
 include $(INCLUDE_DIR)/package.mk
@@ -10,7 +10,7 @@ define Package/luci-app-fullcone
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
-  TITLE:=LuCI page for UDP full cone NAT
+  TITLE:=LuCI page for full cone NAT
   DEPENDS:=+fullcone
   # The SDK has no luci feed, so luci-base is a plain runtime dependency.
   EXTRA_DEPENDS:=luci-base (>=0)

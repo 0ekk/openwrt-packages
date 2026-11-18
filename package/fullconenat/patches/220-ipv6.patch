@@ -1,0 +1,410 @@
+Map IPv6 (NAT66) TCP and UDP the way 200-hardening and 210-tcp map IPv4: the
+IPv6 target had the same unbounded, mapping-killing port search with a u16
+range that wraps to 0 for --to-ports 0-65535 (a division by zero with
+--random), and it was UDP only. Mappings carry their protocol, the search is
+capped at 128 probes from a random start and falls back to plain SNAT, and
+the IPv6 rule check validates the nf_nat_range layout it actually gets (the
+IPv4 check rejected IPv6 rules outright; that family check is gone now that
+each family has its own validator). newrange is zeroed: nf_nat_range2 has
+fields the rule's nf_nat_range does not.
+
+--- a/xt_FULLCONENAT.c
++++ b/xt_FULLCONENAT.c
+@@ -95,7 +95,7 @@
+ 
+ };
+ 
+-/* protocols the IPv4 target maps. Ports are read through the u.udp.port union
++/* protocols both targets map. Ports are read through the u.udp.port union
+  * member for both: it aliases u.tcp.port and u.all (same 16 bits). */
+ static inline int is_fullcone_proto(const uint8_t protonum) {
+   return protonum == IPPROTO_UDP || protonum == IPPROTO_TCP;
+@@ -112,6 +112,8 @@
+   int refer_count;   /* how many references linked to this mapping
+                       * aka. length of original_tuple_list */
+ 
++  uint8_t proto;     /* IPPROTO_UDP or IPPROTO_TCP, as in struct nat_mapping */
++
+   struct list_head original_tuple_list;
+ 
+   struct hlist_node node_by_ext_port;
+@@ -165,7 +167,7 @@
+   return tuple_tmp_string;
+ }
+ 
+-static struct nat_mapping6* allocate_mapping6(const union nf_inet_addr *int_addr, const uint16_t int_port, const uint16_t port, const union nf_inet_addr *addr) {
++static struct nat_mapping6* allocate_mapping6(const union nf_inet_addr *int_addr, const uint16_t int_port, const uint16_t port, const union nf_inet_addr *addr, const uint8_t proto) {
+   struct nat_mapping6 *p_new;
+   u32 hash_src;
+ 
+@@ -179,6 +181,7 @@
+   p_new->int_addr = *int_addr;
+   p_new->int_port = int_port;
+   p_new->refer_count = 0;
++  p_new->proto = proto;
+   (p_new->original_tuple_list).next = &(p_new->original_tuple_list);
+   (p_new->original_tuple_list).prev = &(p_new->original_tuple_list);
+ 
+@@ -204,12 +207,12 @@
+   (mapping->refer_count)++;
+ }
+ 
+-static struct nat_mapping6* get_mapping6_by_int_src(const union nf_inet_addr *src_ip, const uint16_t src_port, const union nf_inet_addr *ext_ip) {
++static struct nat_mapping6* get_mapping6_by_int_src(const union nf_inet_addr *src_ip, const uint16_t src_port, const union nf_inet_addr *ext_ip, const uint8_t proto) {
+   struct nat_mapping6 *p_current;
+   u32 hash_src = jhash2((u32 *)src_ip->all, 4, (u32)src_port);
+ 
+   hash_for_each_possible(mapping6_table_by_int_src, p_current, node_by_int_src, hash_src) {
+-    if (nf_inet_addr_cmp(&p_current->int_addr, src_ip) && p_current->int_port == src_port && nf_inet_addr_cmp(&p_current->addr, ext_ip)) {
++    if (nf_inet_addr_cmp(&p_current->int_addr, src_ip) && p_current->int_port == src_port && p_current->proto == proto && nf_inet_addr_cmp(&p_current->addr, ext_ip)) {
+       return p_current;
+     }
+   }
+@@ -217,12 +220,12 @@
+   return NULL;
+ }
+ 
+-static struct nat_mapping6* get_mapping6_by_int_src_inrange(const union nf_inet_addr *src_ip, const uint16_t src_port, const union nf_inet_addr *min_ip, const union nf_inet_addr *max_ip) {
++static struct nat_mapping6* get_mapping6_by_int_src_inrange(const union nf_inet_addr *src_ip, const uint16_t src_port, const union nf_inet_addr *min_ip, const union nf_inet_addr *max_ip, const uint8_t proto) {
+   struct nat_mapping6 *p_current;
+   u32 hash_src = jhash2((u32 *)src_ip->all, 4, (u32)src_port);
+ 
+   hash_for_each_possible(mapping6_table_by_int_src, p_current, node_by_int_src, hash_src) {
+-    if (nf_inet_addr_cmp(&p_current->int_addr, src_ip) && p_current->int_port == src_port && memcmp(&p_current->addr, min_ip, sizeof(union nf_inet_addr)) >= 0 && memcmp(&p_current->addr, max_ip, sizeof(union nf_inet_addr)) <= 0) {
++    if (nf_inet_addr_cmp(&p_current->int_addr, src_ip) && p_current->int_port == src_port && p_current->proto == proto && memcmp(&p_current->addr, min_ip, sizeof(union nf_inet_addr)) >= 0 && memcmp(&p_current->addr, max_ip, sizeof(union nf_inet_addr)) <= 0) {
+       return p_current;
+     }
+   }
+@@ -296,15 +299,15 @@
+ }
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+-static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const union nf_inet_addr *ext_ip, struct net *net, const struct nf_conntrack_zone *zone) {
++static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const union nf_inet_addr *ext_ip, struct net *net, const struct nf_conntrack_zone *zone, const uint8_t proto) {
+ #else
+-static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const union nf_inet_addr *ext_ip, struct net *net, const u16 zone) {
++static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const union nf_inet_addr *ext_ip, struct net *net, const u16 zone, const uint8_t proto) {
+ #endif
+   struct nat_mapping6 *p_current;
+   struct hlist_node *tmp;
+ 
+   hash_for_each_possible_safe(mapping6_table_by_ext_port, p_current, tmp, node_by_ext_port, port) {
+-    if (p_current->port == port && check_mapping6(p_current, net, zone) && nf_inet_addr_cmp(&p_current->addr, ext_ip)) {
++    if (p_current->port == port && p_current->proto == proto && check_mapping6(p_current, net, zone) && nf_inet_addr_cmp(&p_current->addr, ext_ip)) {
+       return p_current;
+     }
+   }
+@@ -313,62 +316,66 @@
+ }
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+-static uint16_t find_appropriate_port6(struct net *net, const struct nf_conntrack_zone *zone, const uint16_t original_port, const union nf_inet_addr *ext_ip, const struct nf_nat_range *range) {
++static uint16_t find_appropriate_port6(struct net *net, const struct nf_conntrack_zone *zone, const uint16_t original_port, const union nf_inet_addr *ext_ip, const struct nf_nat_range *range, const uint8_t proto) {
+ #else
+-static uint16_t find_appropriate_port6(struct net *net, const u16 zone, const uint16_t original_port, const union nf_inet_addr *ext_ip, const struct nf_nat_range *range) {
++static uint16_t find_appropriate_port6(struct net *net, const u16 zone, const uint16_t original_port, const union nf_inet_addr *ext_ip, const struct nf_nat_range *range, const uint8_t proto) {
+ #endif
+-  uint16_t min, start, selected, range_size, i;
++  uint16_t min, start, selected;
++  u32 range_size, attempts, i;
+   struct nat_mapping6* mapping = NULL;
+ 
+   if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+     min = be16_to_cpu((range->min_proto).udp.port);
+-    range_size = be16_to_cpu((range->max_proto).udp.port) - min + 1;
++    range_size = (u32)be16_to_cpu((range->max_proto).udp.port) - (u32)min + 1;
+   } else {
+     /* minimum port is 1024. same behavior as default linux NAT. */
+     min = 1024;
+     range_size = 65535 - min + 1;
+   }
+ 
++  /* cap the port search to avoid holding the global spinlock too long */
++  attempts = min_t(u32, range_size, 128);
++
+   if ((range->flags & NF_NAT_RANGE_PROTO_RANDOM)
+     || (range->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+     /* for now we do the same thing for both --random and --random-fully */
+ 
+     /* select a random starting point */
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+-    start = (uint16_t)(get_random_u32() % (u32)range_size);
++    start = (uint16_t)(get_random_u32() % range_size);
+ #else
+-    start = (uint16_t)(prandom_u32() % (u32)range_size);
++    start = (uint16_t)(prandom_u32() % range_size);
+ #endif
+   } else {
+ 
+     if ((original_port >= min && original_port <= min + range_size - 1)
+       || !(range->flags & NF_NAT_RANGE_PROTO_SPECIFIED)) {
+       /* 1. try to preserve the port if it's available */
+-      mapping = get_mapping6_by_ext_port(original_port, ext_ip, net, zone);
++      mapping = get_mapping6_by_ext_port(original_port, ext_ip, net, zone, proto);
+       if (mapping == NULL) {
+         return original_port;
+       }
+     }
+ 
+-    /* otherwise, we start from zero */
+-    start = 0;
++    /* start from a random offset so probes spread across the range */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++    start = (uint16_t)(get_random_u32() % range_size);
++#else
++    start = (uint16_t)(prandom_u32() % range_size);
++#endif
+   }
+ 
+-  for (i = 0; i < range_size; i++) {
++  for (i = 0; i < attempts; i++) {
+     /* 2. try to find an available port */
+     selected = min + ((start + i) % range_size);
+-    mapping = get_mapping6_by_ext_port(selected, ext_ip, net, zone);
++    mapping = get_mapping6_by_ext_port(selected, ext_ip, net, zone, proto);
+     if (mapping == NULL) {
+       return selected;
+     }
+   }
+ 
+-  /* 3. at least we tried. override a previous mapping. */
+-  selected = min + start;
+-  mapping = get_mapping6_by_ext_port(selected, ext_ip, net, zone);
+-  kill_mapping6(mapping);
+-
+-  return selected;
++  /* all probed ports taken; return 0 to signal plain SNAT (no mapping) */
++  return 0;
+ }
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+@@ -427,6 +434,7 @@
+ 
+   struct nat_mapping6 *mapping, *src_mapping;
+   unsigned int ret;
++  int skip_mapping = 0;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+   struct nf_nat_range2 newrange;
+ #else
+@@ -454,6 +462,8 @@
+   net = nf_ct_net(ct);
+   zone = nf_ct_zone(ct);
+ 
++  /* nf_nat_range2 has fields (base_proto) the rule's nf_nat_range lacks */
++  memset(&newrange, 0, sizeof(newrange));
+   newrange.flags       = range->flags | NF_NAT_RANGE_MAP_IPS;
+   newrange.min_proto   = range->min_proto;
+   newrange.max_proto   = range->max_proto;
+@@ -463,7 +473,7 @@
+     ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+ 
+     protonum = (ct_tuple_origin->dst).protonum;
+-    if (protonum != IPPROTO_UDP) {
++    if (!is_fullcone_proto(protonum)) {
+       return ret;
+     }
+     ip = &(ct_tuple_origin->dst).u3;
+@@ -472,7 +482,7 @@
+     spin_lock_bh(&fullconenat6_lock);
+ 
+     /* find an active mapping based on the inbound port */
+-    mapping = get_mapping6_by_ext_port(port, ip, net, zone);
++    mapping = get_mapping6_by_ext_port(port, ip, net, zone, protonum);
+     if (mapping != NULL) {
+       newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
+       newrange.min_addr = mapping->int_addr;
+@@ -515,16 +525,16 @@
+ 
+     }
+ 
+-    if (protonum == IPPROTO_UDP) {
++    if (is_fullcone_proto(protonum)) {
+       ip = &(ct_tuple_origin->src).u3;
+       original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
+ 
+       spin_lock_bh(&fullconenat6_lock);
+ 
+       if (!nf_inet_addr_cmp(&newrange.min_addr, &newrange.max_addr))
+-        src_mapping = get_mapping6_by_int_src_inrange(ip, original_port, &newrange.min_addr, &newrange.max_addr);
++        src_mapping = get_mapping6_by_int_src_inrange(ip, original_port, &newrange.min_addr, &newrange.max_addr, protonum);
+       else
+-        src_mapping = get_mapping6_by_int_src(ip, original_port, &newrange.min_addr);
++        src_mapping = get_mapping6_by_int_src(ip, original_port, &newrange.min_addr, protonum);
+ 
+       if (src_mapping != NULL && check_mapping6(src_mapping, net, zone)) {
+ 
+@@ -547,11 +557,17 @@
+           newrange.max_addr = newrange.min_addr;
+         }
+ 
+-        want_port = find_appropriate_port6(net, zone, original_port, &newrange.min_addr, range);
++        want_port = find_appropriate_port6(net, zone, original_port, &newrange.min_addr, range, protonum);
+ 
+-        newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
+-        newrange.min_proto.udp.port = cpu_to_be16(want_port);
+-        newrange.max_proto = newrange.min_proto;
++        if (want_port == 0) {
++          /* all probed ports taken: plain SNAT with the rule's own range, no mapping */
++          pr_info_ratelimited("xt_FULLCONENAT: no free IPv6 port, falling back to plain SNAT\n");
++          skip_mapping = 1;
++        } else {
++          newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
++          newrange.min_proto.udp.port = cpu_to_be16(want_port);
++          newrange.max_proto = newrange.min_proto;
++        }
+ 
+         src_mapping = NULL;
+ 
+@@ -561,12 +577,12 @@
+     /* do SNAT now */
+     ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
+ 
+-    if (protonum != IPPROTO_UDP) {
+-      /* non-UDP packets, bailout */
++    if (!is_fullcone_proto(protonum)) {
++      /* not UDP/TCP: no lock taken, no mapping, bailout */
+       return ret;
+     }
+-    if (ret != NF_ACCEPT) {
+-      /* failed SNAT, bailout */
++    if (ret != NF_ACCEPT || skip_mapping) {
++      /* failed SNAT, or plain SNAT without a mapping: bailout */
+       spin_unlock_bh(&fullconenat6_lock);
+       return ret;
+     }
+@@ -581,7 +597,7 @@
+     /* save the mapping information into our mapping table */
+     mapping = src_mapping;
+     if (mapping == NULL) {
+-      mapping = allocate_mapping6(ip, original_port, port, &(ct_tuple->dst).u3);
++      mapping = allocate_mapping6(ip, original_port, port, &(ct_tuple->dst).u3, protonum);
+     }
+     if (likely(mapping != NULL)) {
+       add_original_tuple_to_mapping6(mapping, ct_tuple_origin);
+@@ -806,13 +822,13 @@
+       ip6 = &(ct_tuple->src).u3;
+       port = be16_to_cpu((ct_tuple->src).u.udp.port);
+       ext_ip6 = &item->tuple_reply.dst.u3;
+-      mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6);
++      mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6, item->tuple_original.dst.protonum);
+       if (mapping6 == NULL) {
+         ext_ip6 = &(ct_tuple->dst).u3;
+         ct_tuple = &(item->tuple_reply);
+         ip6 = &(ct_tuple->src).u3;
+         port = be16_to_cpu((ct_tuple->src).u.udp.port);
+-        mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6);
++        mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6, item->tuple_original.dst.protonum);
+         if (mapping6 != NULL) {
+           pr_debug("xt_FULLCONENAT: handle_dying_tuples(): INBOUND dying conntrack at ext port %d\n", mapping6->port);
+         }
+@@ -1274,41 +1290,16 @@
+   return ret;
+ }
+ 
+-static int fullconenat_tg_check(const struct xt_tgchk_param *par)
++/* checks and setup shared by both families, after each validated its range */
++static int fullconenat_tg_check_common(const struct xt_tgchk_param *par)
+ {
+-  const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
+   int ret;
+ 
+-  if (par->family != NFPROTO_IPV4) {
+-    pr_info_ratelimited("xt_FULLCONENAT: rejected non-IPv4 family %u\n", par->family);
+-    return -EINVAL;
+-  }
+-
+   if (!net_eq(par->net, &init_net)) {
+     pr_info_ratelimited("xt_FULLCONENAT: rejected non-init netns\n");
+     return -EINVAL;
+   }
+ 
+-  if (mr->rangesize != 1) {
+-    pr_info_ratelimited("xt_FULLCONENAT: rejected rangesize %u != 1\n", mr->rangesize);
+-    return -EINVAL;
+-  }
+-
+-  if ((mr->range[0].flags & NF_NAT_RANGE_MAP_IPS) &&
+-      ntohl(mr->range[0].min_ip) > ntohl(mr->range[0].max_ip)) {
+-    pr_info_ratelimited("xt_FULLCONENAT: rejected inverted IP range\n");
+-    return -EINVAL;
+-  }
+-
+-  if (mr->range[0].flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+-    uint16_t pmin = be16_to_cpu(mr->range[0].min.udp.port);
+-    uint16_t pmax = be16_to_cpu(mr->range[0].max.udp.port);
+-    if (pmin == 0 || pmax < pmin) {
+-      pr_info_ratelimited("xt_FULLCONENAT: rejected invalid port range %u-%u\n", pmin, pmax);
+-      return -EINVAL;
+-    }
+-  }
+-
+   ret = nf_ct_netns_get(par->net, par->family);
+   if (ret < 0) {
+     pr_info_ratelimited("xt_FULLCONENAT: nf_ct_netns_get failed: %d\n", ret);
+@@ -1349,6 +1340,57 @@
+   return 0;
+ }
+ 
++static int fullconenat_tg_check(const struct xt_tgchk_param *par)
++{
++  const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
++
++  if (mr->rangesize != 1) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected rangesize %u != 1\n", mr->rangesize);
++    return -EINVAL;
++  }
++
++  if ((mr->range[0].flags & NF_NAT_RANGE_MAP_IPS) &&
++      ntohl(mr->range[0].min_ip) > ntohl(mr->range[0].max_ip)) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected inverted IP range\n");
++    return -EINVAL;
++  }
++
++  if (mr->range[0].flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
++    uint16_t pmin = be16_to_cpu(mr->range[0].min.udp.port);
++    uint16_t pmax = be16_to_cpu(mr->range[0].max.udp.port);
++    if (pmin == 0 || pmax < pmin) {
++      pr_info_ratelimited("xt_FULLCONENAT: rejected invalid port range %u-%u\n", pmin, pmax);
++      return -EINVAL;
++    }
++  }
++
++  return fullconenat_tg_check_common(par);
++}
++
++#if IS_ENABLED(CONFIG_NF_NAT_IPV6) || (IS_ENABLED(CONFIG_IPV6) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0))
++static int fullconenat_tg6_check(const struct xt_tgchk_param *par)
++{
++  const struct nf_nat_range *range = par->targinfo;
++
++  if ((range->flags & NF_NAT_RANGE_MAP_IPS) &&
++      ipv6_addr_cmp(&range->min_addr.in6, &range->max_addr.in6) > 0) {
++    pr_info_ratelimited("xt_FULLCONENAT: rejected inverted IPv6 range\n");
++    return -EINVAL;
++  }
++
++  if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
++    uint16_t pmin = be16_to_cpu(range->min_proto.udp.port);
++    uint16_t pmax = be16_to_cpu(range->max_proto.udp.port);
++    if (pmin == 0 || pmax < pmin) {
++      pr_info_ratelimited("xt_FULLCONENAT: rejected invalid IPv6 port range %u-%u\n", pmin, pmax);
++      return -EINVAL;
++    }
++  }
++
++  return fullconenat_tg_check_common(par);
++}
++#endif
++
+ static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
+ {
+   mutex_lock(&nf_ct_net_event_lock);
+@@ -1387,7 +1429,7 @@
+   .table      = "nat",
+   .hooks      = (1 << NF_INET_PRE_ROUTING) |
+                 (1 << NF_INET_POST_ROUTING),
+-  .checkentry = fullconenat_tg_check,
++  .checkentry = fullconenat_tg6_check,
+   .destroy    = fullconenat_tg_destroy,
+   .me         = THIS_MODULE,
+  },

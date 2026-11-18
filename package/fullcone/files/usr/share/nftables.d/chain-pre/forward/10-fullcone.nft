@@ -1,1 +1,2 @@
 meta l4proto @fullcone_proto iifname @fullcone_wan ip daddr @fullcone_lan ct status dnat accept comment "fullcone: inbound UDP/TCP mapped by xt_FULLCONENAT"
+meta l4proto @fullcone_proto iifname @fullcone_wan ip6 daddr @fullcone_lan6 ct status dnat accept comment "fullcone: inbound IPv6 UDP/TCP mapped by xt_FULLCONENAT"
