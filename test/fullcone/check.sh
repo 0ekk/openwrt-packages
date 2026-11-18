@@ -4,7 +4,7 @@ NAT="ip netns exec fcl-lan python3 -I $TOP/test/fullcone/check_nat.py 203.0.113.
 CONE="python3 -I $TOP/test/fullcone/check_cone.py"
 IPT6="xtables-nft-multi ip6tables-nft -w -t nat"
 
-vm 'uci set fullcone.main.enabled=0 && uci set fullcone.main.tcp=0 && uci commit fullcone && /etc/init.d/firewall reload 2>/dev/null; dmesg -c >/dev/null'
+vm 'uci set fullcone.main.enabled=0 && uci set fullcone.main.tcp=0 && uci set fullcone.main.ipv6=0 && uci commit fullcone && /etc/init.d/firewall reload 2>/dev/null; dmesg -c >/dev/null'
 
 ! $NAT >/dev/null || fail "disabled but already full cone"
 ok "disabled: not full cone"
@@ -107,6 +107,18 @@ vm 'nft list chain ip6 nat FULLCONE_POST' >/dev/null 2>&1 && fail "no masq6: IPv
 vm 'logread' | grep -q 'no firewall zone has masq6' || fail "no masq6: no log line"
 vm 'uci set firewall.@zone[1].masq6=1 && uci commit firewall && /etc/init.d/firewall reload 2>/dev/null'
 ok "ipv6 set without masq6: IPv6 left to fw4, logged"
+
+# 20000 new inbound flows onto one live mapping. Before 230-bounded-check every new flow looked up
+# every flow already on the mapping under the global lock; the lab router then fell behind and
+# tracked about 57% of them. Now nearly all must be tracked.
+for f in 4 6; do
+	p=$(python3 -I "$TOP/test/fullcone/flood.py" $f 20000 5000 | sed -n 's/^flooded port \([0-9]*\):.*/\1/p')
+	[ -n "$p" ] || fail "flood IPv$f: no mapping"
+	sleep 3
+	n=$(vm "conntrack -L -f ipv$f -p udp --dport $p 2>/dev/null | wc -l")
+	[ "$n" -ge 19000 ] || fail "flood IPv$f: only $n of 20000 inbound flows tracked"
+	ok "flood IPv$f: $n of 20000 new inbound flows on one mapping tracked"
+done
 
 vm 'uci set fullcone.main.ipv6=0 && uci commit fullcone && reload_config && sleep 3'
 vm 'nft list chain ip6 nat FULLCONE_POST' >/dev/null 2>&1 && fail "ipv6 off again: IPv6 FULLCONE chain still present"

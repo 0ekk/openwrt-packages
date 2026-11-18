@@ -1,0 +1,109 @@
+Bound the work of a mapping check. check_mapping() and check_mapping6() looked
+up every tuple of the mapping on each call, and each new flow on the mapping
+calls one under the global spinlock, so a flood of new inbound flows to a
+mapped port cost O(n^2) conntrack lookups (lab: 60000 flows saturated both
+CPUs and delayed new LAN flows by up to 2 s). Now the oldest tuples are taken
+from the tail: dead ones are freed (each tuple once, paid for by its
+insertion), live ones are rotated to the head, and the scan stops after 4 live
+ones. A mapping is valid exactly when a live tuple is found, as before.
+
+The IPv4 newrange is zeroed as a whole like the IPv6 one: base_proto was left
+uninitialized (the kernel reads it only with NF_NAT_RANGE_PROTO_OFFSET).
+
+--- a/xt_FULLCONENAT.c
++++ b/xt_FULLCONENAT.c
+@@ -122,6 +122,13 @@
+ };
+ #endif
+ 
++/* live tuples looked up per mapping check. The old full scan made every new flow
++ * on a mapping cost one conntrack lookup per flow already on it, under the global
++ * lock: a flood to a mapped port was quadratic. With rotation every tuple is still
++ * revisited within refer_count / CHECK_MAPPING_LIVE_PROBES checks, so dead tuples
++ * stay bounded by the live ones. */
++#define CHECK_MAPPING_LIVE_PROBES 4
++
+ struct tuple_list {
+   struct nf_conntrack_tuple tuple_original;
+   struct nf_conntrack_tuple tuple_reply;
+@@ -260,16 +267,20 @@
+ #else
+ static int check_mapping6(struct nat_mapping6* mapping, struct net *net, const u16 zone) {
+ #endif
+-  struct list_head *iter, *tmp;
+   struct nat_mapping_original_tuple *original_tuple_item;
+   struct nf_conntrack_tuple_hash *tuple_hash;
+   struct nf_conn *ct;
++  int live = 0;
+ 
+   /* for dying/unconfirmed conntrack tuples, an IPCT_DESTROY event may NOT be fired.
+-   * so we manually kill one of those tuples once we acquire one. */
+-
+-  list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
+-    original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
++   * so we manually kill one of those tuples once we acquire one.
++   * The oldest tuples are at the tail: dead ones are freed as found (each tuple is
++   * freed once, so this is paid for by its insertion), live ones are rotated to the
++   * head, and the scan stops after CHECK_MAPPING_LIVE_PROBES live ones. */
++
++  while (!list_empty(&mapping->original_tuple_list) &&
++         live < CHECK_MAPPING_LIVE_PROBES && live < mapping->refer_count) {
++    original_tuple_item = list_last_entry(&mapping->original_tuple_list, struct nat_mapping_original_tuple, node);
+ 
+     tuple_hash = nf_conntrack_find_get(net, zone, &original_tuple_item->tuple);
+ 
+@@ -283,6 +294,8 @@
+       ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
+       if (likely(ct != NULL))
+         nf_ct_put(ct);
++      list_move(&original_tuple_item->node, &mapping->original_tuple_list);
++      live++;
+     }
+ 
+   }
+@@ -740,16 +753,20 @@
+ #else
+ static int check_mapping(struct nat_mapping* mapping, struct net *net, const u16 zone) {
+ #endif
+-  struct list_head *iter, *tmp;
+   struct nat_mapping_original_tuple *original_tuple_item;
+   struct nf_conntrack_tuple_hash *tuple_hash;
+   struct nf_conn *ct;
++  int live = 0;
+ 
+   /* for dying/unconfirmed conntrack tuples, an IPCT_DESTROY event may NOT be fired.
+-   * so we manually kill one of those tuples once we acquire one. */
+-
+-  list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
+-    original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
++   * so we manually kill one of those tuples once we acquire one.
++   * The oldest tuples are at the tail: dead ones are freed as found (each tuple is
++   * freed once, so this is paid for by its insertion), live ones are rotated to the
++   * head, and the scan stops after CHECK_MAPPING_LIVE_PROBES live ones. */
++
++  while (!list_empty(&mapping->original_tuple_list) &&
++         live < CHECK_MAPPING_LIVE_PROBES && live < mapping->refer_count) {
++    original_tuple_item = list_last_entry(&mapping->original_tuple_list, struct nat_mapping_original_tuple, node);
+ 
+     tuple_hash = nf_conntrack_find_get(net, zone, &original_tuple_item->tuple);
+ 
+@@ -763,6 +780,8 @@
+       ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
+       if (likely(ct != NULL))
+         nf_ct_put(ct);
++      list_move(&original_tuple_item->node, &mapping->original_tuple_list);
++      live++;
+     }
+ 
+   }
+@@ -1139,8 +1158,8 @@
+   net = nf_ct_net(ct);
+   zone = nf_ct_zone(ct);
+ 
+-  memset(&newrange.min_addr, 0, sizeof(newrange.min_addr));
+-  memset(&newrange.max_addr, 0, sizeof(newrange.max_addr));
++  /* also zeroes base_proto, which the IPv4 compat range does not carry */
++  memset(&newrange, 0, sizeof(newrange));
+   newrange.flags       = mr->range[0].flags | NF_NAT_RANGE_MAP_IPS;
+   newrange.min_proto   = mr->range[0].min;
+   newrange.max_proto   = mr->range[0].max;

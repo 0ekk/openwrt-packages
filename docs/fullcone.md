@@ -96,3 +96,6 @@ apk del luci-app-fullcone fullcone iptables-mod-fullconenat kmod-ipt-fullconenat
 - IPv6 full cone needs fw4 to masquerade IPv6 (`masq6`); routed IPv6 is never touched.
 - Mappings are reclaimed lazily (at most about one per external port and protocol); disabling
   unloads the module and frees them.
+- Anyone can open new flows to a mapped port, and each one is tracked. A flood therefore fills the
+  conntrack table as it would with a port forward. The module's own cost per new flow is constant
+  (since `kmod-ipt-fullconenat` r6).
