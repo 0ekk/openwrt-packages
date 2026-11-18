@@ -3,8 +3,9 @@
 # with a throwaway key (KEYS_DIR = its public half) to test the layout.
 # Usage, from the repository root after ./build.sh SDK_ENV filled out/:
 #   APK_SIGN_KEY=<private key PEM> .github/feed-site.sh SDK_ENV SITE
-#   SITE/<release>/packages/<arch>/   kernel-independent packages
-#   SITE/<release>/targets/<target>/  kmods: they only install on this target's kernel
+#   SITE/<release>/packages/<arch>/packages/  kernel-independent packages
+#   SITE/<release>/packages/<arch>/luci/      LuCI packages (luci-*)
+#   SITE/<release>/targets/<target>/          kmods: they only install on this target's kernel
 # Each directory gets packages.adb (signed, then verified against KEYS_DIR, default keys/) and
 # index.json (unsigned package list, as the SDK makes it; owut reads it). The key file only
 # exists while apk signs; the SDK's scripts run after it is deleted.
@@ -18,16 +19,18 @@ keys=${KEYS_DIR:-$TOP/keys}
 arch=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\(.*\)"/\1/p' "$sdk/.config")
 [ -n "$arch" ] || { echo "no CONFIG_TARGET_ARCH_PACKAGES in $sdk/.config" >&2; exit 1; }
 
-pkgs= kmods=
+pkgs= luci= kmods=
 for f in "$TOP"/out/*.apk; do
 	case ${f##*/} in
 	kmod-*) kmods="$kmods $f" ;;
+	luci-*) luci="$luci $f" ;;
 	*) pkgs="$pkgs $f" ;;
 	esac
 done
-[ -n "$pkgs$kmods" ] || { echo "no packages in out/" >&2; exit 1; }
+[ -n "$pkgs$luci$kmods" ] || { echo "no packages in out/" >&2; exit 1; }
 feeds=
-[ -z "$pkgs" ] || feeds="$feeds $REL/packages/$arch"
+[ -z "$pkgs" ] || feeds="$feeds $REL/packages/$arch/packages"
+[ -z "$luci" ] || feeds="$feeds $REL/packages/$arch/luci"
 [ -z "$kmods" ] || feeds="$feeds $REL/targets/$TARGET"
 
 key=$(mktemp)
@@ -36,7 +39,8 @@ printf '%s\n' "$APK_SIGN_KEY" > "$key"
 # Word splitting is intended: the paths come from out/ and sdk/*.env and contain no spaces.
 for f in $feeds; do
 	case $f in
-	*/packages/*) set -- $pkgs ;;
+	*/packages/$arch/packages) set -- $pkgs ;;
+	*/packages/$arch/luci) set -- $luci ;;
 	*) set -- $kmods ;;
 	esac
 	mkdir -p "$site/$f"

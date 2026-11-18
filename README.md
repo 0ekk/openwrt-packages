@@ -17,16 +17,18 @@ only install on the exact kernel of that release.
 ```sh
 wget -O /etc/apk/keys/openwrt-packages.pem https://0ekk.github.io/openwrt-packages/keys/openwrt-packages.pem
 echo /etc/apk/keys/openwrt-packages.pem >> /etc/sysupgrade.conf
-echo https://0ekk.github.io/openwrt-packages/25.12.5/packages/x86_64/packages.adb >> /etc/apk/repositories.d/customfeeds.list
+echo https://0ekk.github.io/openwrt-packages/25.12.5/packages/x86_64/packages/packages.adb >> /etc/apk/repositories.d/customfeeds.list
+echo https://0ekk.github.io/openwrt-packages/25.12.5/packages/x86_64/luci/packages.adb >> /etc/apk/repositories.d/customfeeds.list
 echo https://0ekk.github.io/openwrt-packages/25.12.5/targets/x86/64/packages.adb >> /etc/apk/repositories.d/customfeeds.list
 apk update
 apk add luci-app-fullcone
 ```
 
-Like the official download server, packages are split by architecture (`packages/<arch>/`) and
-kernel modules by target (`targets/<target>/`, they only install on that target's kernel); a
-router needs both lines. The single feed `<release>/<target>/packages.adb` used before
-2026-11-18 is gone: replace that line with the two above.
+Like the official download server, packages are split by architecture into `packages/<arch>/packages/`
+and `packages/<arch>/luci/` (LuCI apps), and kernel modules by target into `targets/<target>/` (they
+only install on that target's kernel); a router needs all three lines. Earlier feed paths
+(`<release>/<target>/` and `<release>/packages/<arch>/packages.adb`) are gone: replace those
+lines with the three above.
 
 Upgrade: `apk update && apk upgrade` (everything), or only these packages with
 `apk add -u luci-app-fullcone fullcone iptables-mod-fullconenat kmod-ipt-fullconenat`, which

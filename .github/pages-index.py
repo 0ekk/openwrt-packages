@@ -3,9 +3,9 @@
 
 Usage: pages-index.py SITE BASE_URL COMMIT
 BASE_URL is the published root (https://<owner>.github.io/<repo>/). A directory holding a
-packages.adb is a feed (layout: .github/feed-site.sh): <release>/packages/<arch>/ or
+packages.adb is a feed (layout: .github/feed-site.sh): <release>/packages/<arch>/<name>/ or
 <release>/targets/<target>/. Feed pages show their repository line; the root page shows the
-install commands, both lines per target. Exits 1 if a generated link points to nothing, so the deploy stops.
+install commands, every feed line of a release and target. Exits 1 if a generated link points to nothing, so the deploy stops.
 """
 import datetime
 import html
@@ -68,21 +68,20 @@ def echo(base, feed):
 
 
 def install_blocks(site, base, feeds):
-    """(heading, lines) per target: its packages and targets feed lines, then apk update. A
-    packages feed no target refers to gets a block of its own."""
+    """(heading, lines) per target: the feed lines of its release and arch (luci, packages), its
+    targets feed line, then apk update. Arch feeds no target refers to get a block of their own."""
     blocks, used = [], set()
     for t in (f for f in feeds if kind(f) == "targets"):
         rel, target = t.split("/targets/", 1)
         a = arch(site, t)
-        p = f"{rel}/packages/{a}"
-        lines = [echo(base, t)]
-        if p in feeds:
-            lines.insert(0, echo(base, p))
-            used.add(p)
-        blocks.append((f"{rel} · {target} ({a})", lines + ["apk update"]))
-    for p in (f for f in feeds if kind(f) == "packages" and f not in used):
-        rel, _, a = p.split("/", 2)
-        blocks.append((f"{rel} · {a}", [echo(base, p), "apk update"]))
+        own = [f for f in feeds if f.startswith(f"{rel}/packages/{a}/")]
+        used.update(own)
+        blocks.append((f"{rel} · {target} ({a})", [echo(base, f) for f in own + [t]] + ["apk update"]))
+    rest = [f for f in feeds if kind(f) == "packages" and f not in used]
+    for rel_arch in dict.fromkeys(f.rsplit("/", 1)[0] for f in rest):
+        rel, _, a = rel_arch.split("/", 2)
+        lines = [echo(base, f) for f in rest if f.startswith(rel_arch + "/")]
+        blocks.append((f"{rel} · {a}", lines + ["apk update"]))
     return blocks
 
 
@@ -102,16 +101,17 @@ def page(site, rel, base, root_name, footer, feeds, keys):
             body.append("<h2>Use the feed</h2><p>Add the signing key once:</p>")
             body.append(pre(f"wget -O /etc/apk/keys/{keys[0]} {base}keys/{keys[0]}",
                             f"echo /etc/apk/keys/{keys[0]} >> /etc/sysupgrade.conf"))
-        body.append("<p>Then add the two feeds of your release and target (packages for the "
-                    "architecture, kernel modules for the target), and update:</p>")
+        body.append("<p>Then add the feeds of your release and target (packages and LuCI apps "
+                    "for the architecture, kernel modules for the target), and update:</p>")
         for heading, lines in install_blocks(site, base, feeds):
             body.append(f"<h3>{html.escape(heading)}</h3>")
             body.append(pre(*lines))
         body.append("<h2>Files</h2>")
     elif rel in feeds:
         body.append(pre(echo(base, rel)))
-        body.append("<p>A router needs both the packages feed of its architecture and the targets "
-                    f'feed of its target: see the <a href="{"../" * up}">feed root</a>.</p>')
+        body.append("<p>A router needs every feed of its release: packages and LuCI apps for its "
+                    "architecture, kernel modules for its target. See the "
+                    f'<a href="{"../" * up}">feed root</a>.</p>')
 
     rows = [] if not parts else ['<tr><td><a href="../">../</a></td><td class="s">-</td></tr>']
     entries = sorted(os.scandir(path), key=lambda e: (not e.is_dir(), e.name))
